@@ -1,14 +1,39 @@
-# ============================================================================
+# =============================================================================
 # 01_GSE172274_deseq2.R
-# Cohort-level RNA-seq analysis for GSE172274
 #
-# IMPORTANT:
-# This version is intentionally written as a LINEAR SCRIPT.
-# No custom functions are created.
+# Differential expression analysis of GSE172274
 #
-# Run from the COVID-Project RStudio Project.
-# The script uses here::here(), so no absolute Windows path is required.
-# ============================================================================
+# This script reproduces the cohort-level RNA-seq analysis used for the
+# cross-cohort comparison of pediatric and adult SARS-CoV-2-positive samples.
+#
+# Primary analysis
+#   - Pediatric: age < 18 years
+#   - Adult: age >= 18 years
+#   - DESeq2 design: ~ Sex + Group, when sex adjustment is estimable
+#   - Contrast: Pediatric vs Adult
+#   - Positive log2FoldChange: higher expression in Pediatric samples
+#   - Low-count filter: raw count >= 10 in at least the size of the smaller
+#     age group
+#
+# Sensitivity analyses
+#   - Age modeled as a continuous variable
+#   - Alternative prevalence filter: CPM >= 1 in at least the size of the
+#     smaller age group
+#   - Group-by-sex interaction, when estimable
+#
+# Downstream outputs
+#   - Complete cohort-level DESeq2 results
+#   - Unshrunken log2FC and SE for cross-cohort meta-analysis
+#   - Genome-wide ranked statistics for pre-ranked GSEA
+#   - Normalized-count and VST matrices
+#   - QC, PCA, annotation, and sensitivity diagnostics
+#
+# Repository use
+#   Run from the root of the COVID-Project RStudio Project. Paths are resolved
+#   with here::here(); no machine-specific working directory is required.
+#
+# The script is intentionally linear and does not define custom functions.
+# =============================================================================
 
 
 # ============================================================================
@@ -61,7 +86,15 @@ MIN_COUNT <- 10
 MIN_CPM <- 1
 ALPHA <- 0.05
 
-raw_counts_filename <- "GSE172274_raw_counts_GRCh38.p13_NCBI.tsv"
+raw_counts_filename <- "GSE172274_raw_counts_GRCh38.p13_NCBI.tsv.gz"
+
+raw_counts_url <- paste0(
+  "https://www.ncbi.nlm.nih.gov/geo/download/",
+  "?type=rnaseq_counts",
+  "&acc=GSE172274",
+  "&format=file",
+  "&file=GSE172274_raw_counts_GRCh38.p13_NCBI.tsv.gz"
+)
 
 project_root <- here::here()
 
@@ -73,6 +106,7 @@ primary_dir <- file.path(results_root, "primary")
 sensitivity_dir <- file.path(results_root, "sensitivity")
 diagnostics_dir <- file.path(results_root, "diagnostics")
 figures_dir <- file.path(results_root, "figures")
+sensitivity_figures_dir <- file.path(figures_dir, "sensitivity")
 
 dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(results_root, recursive = TRUE, showWarnings = FALSE)
@@ -81,6 +115,7 @@ dir.create(primary_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(sensitivity_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(diagnostics_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(sensitivity_figures_dir, recursive = TRUE, showWarnings = FALSE)
 
 message("Project root: ", project_root)
 message("Results directory: ", results_root)
@@ -134,9 +169,6 @@ writeLines(
   )
 )
 
-# Expected column names based on the current GEO metadata.
-# If GEO changes these names, the script will stop rather than silently guess.
-
 required_metadata_columns <- c(
   "geo_accession",
   "title",
@@ -163,7 +195,6 @@ if (length(missing_metadata_columns) > 0) {
   )
 }
 
-# Respiratory score is useful if available, but it is not required to run DESeq2.
 respiratory_score_column <- grep(
   "respiratory.*score|severity.*score|severity",
   metadata_columns,
@@ -222,11 +253,6 @@ sample_metadata$Group <- ifelse(
   )
 )
 
-sample_metadata$IsPooled <- grepl(
-  "POOL",
-  sample_metadata$Sample,
-  ignore.case = TRUE
-)
 
 
 # ============================================================================
@@ -243,9 +269,6 @@ write.csv(
 )
 
 print(diagnosis_summary)
-
-# No automatic "Positive"/"Negative" recoding is performed.
-# GEO diagnosis labels are preserved exactly as provided.
 
 
 # ============================================================================
@@ -289,7 +312,7 @@ if (nrow(sample_metadata_primary) == 0) {
 
 
 # ============================================================================
-# 07. Load raw counts
+# 07. Download raw counts from NCBI GEO if absent
 # ============================================================================
 
 counts_file <- file.path(
@@ -298,18 +321,62 @@ counts_file <- file.path(
 )
 
 if (!file.exists(counts_file)) {
-  stop(
-    "Raw-count file not found:\n",
-    counts_file,
-    "\n\nPlace the file here before running the script:\n",
-    data_dir
+  
+  message("Raw-count file not found locally.")
+  message("Downloading from NCBI GEO...")
+  message("Destination: ", counts_file)
+  
+  download.file(
+    url = raw_counts_url,
+    destfile = counts_file,
+    mode = "wb",
+    method = "auto",
+    quiet = FALSE
+  )
+  
+  if (!file.exists(counts_file)) {
+    stop(
+      "The raw-count download did not create the expected file:\n",
+      counts_file
+    )
+  }
+  
+  downloaded_size <- file.info(counts_file)$size
+  
+  if (is.na(downloaded_size) || downloaded_size == 0) {
+    stop(
+      "The downloaded raw-count file is empty:\n",
+      counts_file
+    )
+  }
+  
+  message(
+    "Download completed. File size: ",
+    round(downloaded_size / 1024^2, 2),
+    " MB"
+  )
+  
+} else {
+  
+  message(
+    "Raw-count file already exists. Download skipped: ",
+    counts_file
   )
 }
+
+
+# ============================================================================
+# 08. Load raw count matrix
+# ============================================================================
 
 raw_counts <- readr::read_tsv(
   counts_file,
   show_col_types = FALSE
 )
+
+# Convert tibble to base data.frame before assigning row names.
+# This avoids the warning: "Setting row names on a tibble is deprecated."
+raw_counts <- as.data.frame(raw_counts)
 
 if (!"GeneID" %in% colnames(raw_counts)) {
   stop("The raw-count file does not contain a GeneID column.")
@@ -323,7 +390,7 @@ if (anyDuplicated(raw_counts$GeneID) > 0) {
       duplicated(raw_counts$GeneID)
     ]
   )
-
+  
   writeLines(
     duplicated_gene_ids,
     file.path(
@@ -331,7 +398,7 @@ if (anyDuplicated(raw_counts$GeneID) > 0) {
       paste0(dataset_id, "_duplicated_raw_GeneID.txt")
     )
   )
-
+  
   stop(
     "Duplicated GeneID values were found in the raw count matrix."
   )
@@ -362,7 +429,7 @@ counts_matrix <- round(counts_matrix)
 
 
 # ============================================================================
-# 08. Match metadata and counts
+# 09. Match metadata and counts
 # ============================================================================
 
 samples_in_both <- intersect(
@@ -425,14 +492,13 @@ stopifnot(
 
 
 # ============================================================================
-# 09. Cohort composition
+# 10. Cohort composition
 # ============================================================================
 
 cohort_summary <- sample_metadata_primary %>%
   count(
     Group,
     Sex,
-    IsPooled,
     name = "N"
   )
 
@@ -465,7 +531,7 @@ capture.output(
 
 
 # ============================================================================
-# 10. Primary low-count filtering
+# 11. Primary low-count filtering
 # ============================================================================
 
 group_sizes <- table(sample_metadata_primary$Group)
@@ -488,7 +554,7 @@ counts_primary <- counts_matrix[
 
 
 # ============================================================================
-# 11. CPM-based sensitivity filter
+# 12. CPM-based sensitivity filter
 # ============================================================================
 
 cpm_matrix <- edgeR::cpm(counts_matrix)
@@ -531,7 +597,7 @@ print(filtering_summary)
 
 
 # ============================================================================
-# 12. Determine whether sex adjustment is feasible
+# 13. Determine whether sex adjustment is feasible
 # ============================================================================
 
 sex_adjustment_feasible <- (
@@ -542,16 +608,14 @@ if (sex_adjustment_feasible) {
   primary_design <- ~ Sex + Group
 } else {
   primary_design <- ~ Group
-
   warning(
-    "Sex adjustment is not feasible. ",
-    "Primary model will use ~ Group."
+    "Sex adjustment is not feasible. Primary model will use ~ Group."
   )
 }
 
 
 # ============================================================================
-# 13. Primary DESeq2 model
+# 14. Primary DESeq2 model
 # ============================================================================
 
 dds_primary <- DESeqDataSetFromMatrix(
@@ -588,7 +652,7 @@ res_primary_df <- res_primary_df %>%
 
 
 # ============================================================================
-# 14. Annotation diagnostics
+# 15. Annotation diagnostics
 # ============================================================================
 
 annotation_list <- AnnotationDbi::mapIds(
@@ -604,19 +668,28 @@ annotation_diagnostics <- data.frame(
   N_SYMBOLS = lengths(annotation_list),
   SYMBOLS = vapply(
     annotation_list,
-    function(x) paste(as.character(x), collapse = ";"),
-    character(1)
+    paste,
+    character(1),
+    collapse = ";"
   ),
   stringsAsFactors = FALSE
 )
 
+# CharacterList can retain an element with an NA value. Therefore mapping
+# status is determined from the actual mapped symbol string rather than from
+# list length alone.
+annotation_diagnostics$SYMBOLS[
+  annotation_diagnostics$SYMBOLS %in% c("", "NA", "NaN")
+] <- NA_character_
+
 annotation_diagnostics$AnnotationStatus <- ifelse(
-  annotation_diagnostics$N_SYMBOLS == 0,
+  is.na(annotation_diagnostics$SYMBOLS),
   "No_symbol",
   ifelse(
-    annotation_diagnostics$N_SYMBOLS == 1,
-    "Unique_symbol",
-    "Ambiguous_symbol"
+    annotation_diagnostics$N_SYMBOLS > 1 |
+      grepl(";", annotation_diagnostics$SYMBOLS, fixed = TRUE),
+    "Ambiguous_symbol",
+    "Unique_symbol"
   )
 )
 
@@ -630,7 +703,7 @@ write.csv(
 )
 
 unique_annotation <- annotation_diagnostics[
-  annotation_diagnostics$N_SYMBOLS == 1,
+  annotation_diagnostics$AnnotationStatus == "Unique_symbol",
   c("ENTREZID", "SYMBOLS"),
   drop = FALSE
 ]
@@ -681,7 +754,7 @@ res_primary_annotated$MetaEligibleAnnotation <- (
 
 
 # ============================================================================
-# 15. Export COMPLETE primary DESeq2 results
+# 16. Export COMPLETE primary DESeq2 results
 # ============================================================================
 
 write.csv(
@@ -695,10 +768,11 @@ write.csv(
 
 
 # ============================================================================
-# 16. Export meta-analysis input
+# 17. Export meta-analysis input
 # ============================================================================
 
-# No filtering by p-value, FDR, direction, or effect magnitude.
+# All technically eligible genes are retained; significance and effect direction
+# are evaluated downstream.
 
 meta_input <- res_primary_annotated %>%
   filter(
@@ -733,26 +807,26 @@ write.csv(
 
 
 # ============================================================================
-# 17. Shrinkage for visualization only
+# 18. Shrinkage for visualization only
 # ============================================================================
 
 expected_coef <- "Group_Pediatric_vs_Adult"
 
 if (expected_coef %in% resultsNames(dds_primary)) {
-
+  
   res_shrunk <- lfcShrink(
     dds_primary,
     coef = expected_coef,
     type = "apeglm"
   )
-
+  
   res_shrunk_df <- as.data.frame(res_shrunk)
   res_shrunk_df$ENTREZID <- rownames(res_shrunk_df)
   rownames(res_shrunk_df) <- NULL
-
+  
   res_shrunk_df <- res_shrunk_df %>%
     relocate(ENTREZID)
-
+  
   res_shrunk_df <- merge(
     res_shrunk_df,
     unique_annotation,
@@ -760,7 +834,7 @@ if (expected_coef %in% resultsNames(dds_primary)) {
     all.x = TRUE,
     sort = FALSE
   )
-
+  
   write.csv(
     res_shrunk_df,
     file.path(
@@ -773,7 +847,7 @@ if (expected_coef %in% resultsNames(dds_primary)) {
 
 
 # ============================================================================
-# 18. Normalized counts
+# 19. Normalized counts
 # ============================================================================
 
 normalized_counts <- counts(
@@ -799,7 +873,65 @@ write.csv(
 
 
 # ============================================================================
-# 19. Size factors
+# 20. Export matrices/tables for downstream pathway analysis (GSEA)
+# ============================================================================
+
+# VST matrix: useful for downstream visualization and exploratory analyses.
+vsd_export <- vst(
+  dds_primary,
+  blind = TRUE
+)
+
+vst_matrix <- as.data.frame(assay(vsd_export))
+vst_matrix$ENTREZID <- rownames(vst_matrix)
+rownames(vst_matrix) <- NULL
+
+vst_matrix <- vst_matrix %>%
+  relocate(ENTREZID)
+
+write.csv(
+  vst_matrix,
+  file.path(
+    primary_dir,
+    paste0(dataset_id, "_VST_matrix.csv")
+  ),
+  row.names = FALSE
+)
+
+# Full genome-wide ranked table for pre-ranked GSEA.
+# DESeq2 Wald statistic is retained as the ranking metric. Genes are restricted
+# only to valid, unique SYMBOL mappings; no statistical-significance threshold
+# is applied.
+gsea_ranked <- res_primary_annotated %>%
+  filter(
+    MetaEligibleAnnotation,
+    !is.na(stat),
+    is.finite(stat)
+  ) %>%
+  transmute(
+    Dataset = dataset_id,
+    Original_ID = ENTREZID,
+    SYMBOL,
+    ranking_statistic = stat,
+    log2FoldChange,
+    lfcSE,
+    pvalue,
+    padj
+  ) %>%
+  arrange(desc(ranking_statistic))
+
+write.csv(
+  gsea_ranked,
+  file.path(
+    primary_dir,
+    paste0(dataset_id, "_GSEA_ranked_genes.csv")
+  ),
+  row.names = FALSE
+)
+
+
+# ============================================================================
+# 21. Size factors
 # ============================================================================
 
 size_factor_table <- data.frame(
@@ -818,7 +950,7 @@ write.csv(
 
 
 # ============================================================================
-# 20. Dispersion diagnostics
+# 22. Dispersion diagnostics
 # ============================================================================
 
 tiff(
@@ -847,7 +979,7 @@ if (is.null(dispersion_fit_type)) {
 
 
 # ============================================================================
-# 21. Independent filtering
+# 23. Independent filtering
 # ============================================================================
 
 res_metadata <- S4Vectors::metadata(res_primary)
@@ -862,25 +994,36 @@ if (!is.null(filter_threshold)) {
 
 
 # ============================================================================
-# 22. Cook's distance diagnostics
+# 24. Cook's distance diagnostics
 # ============================================================================
 
 cooks_matrix <- assays(dds_primary)[["cooks"]]
 
 if (!is.null(cooks_matrix)) {
-
+  
   max_cooks <- apply(
     cooks_matrix,
     1,
     max,
     na.rm = TRUE
   )
-
+  
+  # apply() may return an unnamed vector depending on the object/dimnames.
+  # Use the DESeqDataSet row names explicitly as the gene identifiers.
+  cooks_entrez_ids <- rownames(dds_primary)
+  
+  if (is.null(cooks_entrez_ids) || length(cooks_entrez_ids) != length(max_cooks)) {
+    stop(
+      "Could not match Cook's-distance values to DESeq2 gene identifiers."
+    )
+  }
+  
   cooks_diagnostics <- data.frame(
-    ENTREZID = names(max_cooks),
-    MaxCooksDistance = max_cooks
+    ENTREZID = cooks_entrez_ids,
+    MaxCooksDistance = as.numeric(max_cooks),
+    stringsAsFactors = FALSE
   )
-
+  
   write.csv(
     cooks_diagnostics,
     file.path(
@@ -893,112 +1036,179 @@ if (!is.null(cooks_matrix)) {
 
 
 # ============================================================================
-# 23. PCA
+# 25. PCA
 # ============================================================================
 
-vsd <- vst(
+# PCA styling and export settings are kept consistent with the manuscript.
+
+rld <- vst(
   dds_primary,
   blind = TRUE
 )
 
-pca <- prcomp(
-  t(assay(vsd)),
-  center = TRUE,
-  scale. = FALSE
+pcaData <- plotPCA(
+  rld,
+  intgroup = c("Group"),
+  returnData = TRUE
 )
 
-pca_variance <- 100 * (
-  pca$sdev^2 / sum(pca$sdev^2)
+percentVar <- round(
+  100 * attr(
+    pcaData,
+    "percentVar"
+  )
 )
 
-pca_scores <- as.data.frame(pca$x)
-pca_scores$GEO_ID <- rownames(pca_scores)
-rownames(pca_scores) <- NULL
-
-pca_scores <- merge(
-  pca_scores,
-  sample_metadata_primary,
-  by = "GEO_ID",
-  all.x = TRUE,
-  sort = FALSE
-)
-
-write.csv(
-  pca_scores,
+tiff(
   file.path(
-    diagnostics_dir,
-    paste0(dataset_id, "_PCA_scores.csv")
+    figures_dir,
+    "PCA_R_GSE172274_Eng.tiff"
   ),
-  row.names = FALSE
+  res = 600,
+  width = 3700,
+  height = 2000,
+  compression = "lzw"
 )
 
-pca_plot <- ggplot(
-  pca_scores,
+ggplot(
+  pcaData,
   aes(
-    x = PC1,
-    y = PC2,
-    colour = Group
+    PC1,
+    PC2
   )
 ) +
-  geom_point(size = 3) +
-  ggtitle(dataset_id) +
+  geom_point(
+    aes(
+      colour = Group
+    ),
+    size = 3
+  ) +
+  ggtitle("GSE172274") +
   xlab(
     paste0(
       "PC1: ",
-      round(pca_variance[1], 1),
+      percentVar[1],
       "% variance"
     )
   ) +
   ylab(
     paste0(
       "PC2: ",
-      round(pca_variance[2], 1),
+      percentVar[2],
       "% variance"
     )
   ) +
   theme_bw() +
   theme(
     plot.title = element_text(
-      hjust = 0.5,
+      hjust = 0.4,
       face = "bold"
     ),
-    panel.grid = element_blank()
+    axis.title = element_text(
+      size = 12
+    ),
+    axis.text = element_text(
+      size = 10
+    ),
+    legend.title = element_text(
+      size = 13,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      size = 13
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "#3E76BC",
+      "#FCCE24"
+    ),
+    labels = c(
+      "SARS-CoV-2 + Adult",
+      "SARS-CoV-2 + Pediatric"
+    )
   ) +
   labs(
-    colour = "Age group"
+    color = "Status"
   )
 
-ggsave(
-  filename = file.path(
-    figures_dir,
-    paste0(dataset_id, "_PCA.tiff")
+dev.off()
+
+
+# ---------------------------------------------------------------------------
+# Quantitative assessment of age and sex associations with PC1 and PC2.
+# ---------------------------------------------------------------------------
+
+pca_scores <- as.data.frame(
+  pcaData
+)
+
+pca_scores$GEO_ID <- rownames(
+  pcaData
+)
+
+rownames(pca_scores) <- NULL
+
+# plotPCA(returnData = TRUE) already contains the Group column.
+# Join only the additional metadata required for quantitative analyses to avoid
+# creating Group.x / Group.y during the merge.
+pca_scores <- merge(
+  pca_scores,
+  sample_metadata_primary %>%
+    dplyr::select(
+      GEO_ID,
+      Age,
+      Sex
+    ),
+  by = "GEO_ID",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+if (!all(c("Group", "Age", "Sex") %in% colnames(pca_scores))) {
+  stop(
+    "PCA metadata merge failed: Group, Age, and Sex must be present in pca_scores."
+  )
+}
+
+
+write.csv(
+  pca_scores,
+  file.path(
+    diagnostics_dir,
+    paste0(
+      dataset_id,
+      "_PCA_scores.csv"
+    )
   ),
-  plot = pca_plot,
-  width = 7,
-  height = 5,
-  dpi = 600,
-  compression = "lzw"
+  row.names = FALSE
 )
 
 if (sex_adjustment_feasible) {
-
+  
   pca_pc1_model <- lm(
     PC1 ~ Age + Sex,
     data = pca_scores
   )
-
+  
   pca_pc2_model <- lm(
     PC2 ~ Age + Sex,
     data = pca_scores
   )
-
+  
 } else {
-
+  
   pca_pc1_model <- lm(
     PC1 ~ Age,
     data = pca_scores
   )
-
+  
   pca_pc2_model <- lm(
     PC2 ~ Age,
     data = pca_scores
@@ -1008,21 +1218,300 @@ if (sex_adjustment_feasible) {
 writeLines(
   c(
     "===== PC1 =====",
-    capture.output(summary(pca_pc1_model)),
+    capture.output(
+      summary(
+        pca_pc1_model
+      )
+    ),
     "",
     "===== PC2 =====",
-    capture.output(summary(pca_pc2_model))
+    capture.output(
+      summary(
+        pca_pc2_model
+      )
+    )
   ),
   file.path(
     diagnostics_dir,
-    paste0(dataset_id, "_PCA_age_models.txt")
+    paste0(
+      dataset_id,
+      "_PCA_age_models.txt"
+    )
   )
 )
 
 
 # ============================================================================
-# 24. Sensitivity: continuous age
+# 26. Expression and PCA diagnostics
 # ============================================================================
+
+# Expression prevalence and raw-count distributions are exported to document
+# the behavior of the primary prevalence filter. Figure styling follows the
+# PCA used in the manuscript (theme_bw, black border, 600-dpi TIFF output).
+
+
+# ---------------------------------------------------------------------------
+# 26A. Expression prevalence
+# ---------------------------------------------------------------------------
+
+expression_prevalence <- data.frame(
+  ENTREZID = rownames(counts_matrix),
+  N_samples_count_ge_10 = rowSums(counts_matrix >= MIN_COUNT),
+  Proportion_samples_count_ge_10 = rowMeans(counts_matrix >= MIN_COUNT),
+  stringsAsFactors = FALSE
+)
+
+write.csv(
+  expression_prevalence,
+  file.path(
+    diagnostics_dir,
+    paste0(dataset_id, "_expression_prevalence.csv")
+  ),
+  row.names = FALSE
+)
+
+tiff(
+  file.path(
+    sensitivity_figures_dir,
+    "Expression_prevalence_GSE172274.tiff"
+  ),
+  res = 600,
+  width = 3700,
+  height = 2000,
+  compression = "lzw"
+)
+
+ggplot(
+  expression_prevalence,
+  aes(
+    x = N_samples_count_ge_10
+  )
+) +
+  geom_histogram(
+    binwidth = 1,
+    boundary = 0,
+    closed = "left",
+    fill = "#3E76BC",
+    colour = "black"
+  ) +
+  geom_vline(
+    xintercept = min_group_size,
+    linetype = 2,
+    linewidth = 0.8
+  ) +
+  ggtitle("GSE172274") +
+  xlab("Number of samples with raw count >= 10") +
+  ylab("Number of genes") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.4,
+      face = "bold"
+    ),
+    axis.title = element_text(
+      size = 12
+    ),
+    axis.text = element_text(
+      size = 10
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA
+    )
+  )
+
+dev.off()
+
+
+# ---------------------------------------------------------------------------
+# 26B. Raw-count distribution by age group
+# ---------------------------------------------------------------------------
+
+raw_count_long <- as.data.frame(counts_matrix)
+raw_count_long$ENTREZID <- rownames(raw_count_long)
+
+raw_count_long <- raw_count_long %>%
+  pivot_longer(
+    cols = -ENTREZID,
+    names_to = "GEO_ID",
+    values_to = "RawCount"
+  ) %>%
+  left_join(
+    sample_metadata_primary %>%
+      dplyr::select(
+        GEO_ID,
+        Group
+      ),
+    by = "GEO_ID"
+  )
+
+write.csv(
+  raw_count_long,
+  file.path(
+    diagnostics_dir,
+    paste0(dataset_id, "_raw_count_distribution_long.csv")
+  ),
+  row.names = FALSE
+)
+
+tiff(
+  file.path(
+    sensitivity_figures_dir,
+    "Raw_count_distribution_GSE172274.tiff"
+  ),
+  res = 600,
+  width = 3700,
+  height = 2000,
+  compression = "lzw"
+)
+
+ggplot(
+  raw_count_long,
+  aes(
+    x = log10(RawCount + 1),
+    colour = Group
+  )
+) +
+  geom_density(
+    linewidth = 1,
+    adjust = 1
+  ) +
+  ggtitle("GSE172274") +
+  xlab("log10(raw count + 1)") +
+  ylab("Density") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.4,
+      face = "bold"
+    ),
+    axis.title = element_text(
+      size = 12
+    ),
+    axis.text = element_text(
+      size = 10
+    ),
+    legend.title = element_text(
+      size = 13,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      size = 13
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "#3E76BC",
+      "#FCCE24"
+    ),
+    labels = c(
+      "SARS-CoV-2 + Adult",
+      "SARS-CoV-2 + Pediatric"
+    )
+  ) +
+  labs(
+    color = "Status"
+  )
+
+dev.off()
+
+
+# ---------------------------------------------------------------------------
+# 26C. Age association with PC2
+# ---------------------------------------------------------------------------
+
+# PC2 showed the strongest quantitative association with age in the evaluated
+# cohort. This plot complements, but does not replace, the formal linear models
+# exported in GSE172274_PCA_age_models.txt.
+
+tiff(
+  file.path(
+    sensitivity_figures_dir,
+    "PC2_vs_age_GSE172274.tiff"
+  ),
+  res = 600,
+  width = 3700,
+  height = 2000,
+  compression = "lzw"
+)
+
+ggplot(
+  pca_scores,
+  aes(
+    x = Age,
+    y = PC2,
+    colour = Group
+  )
+) +
+  geom_point(
+    size = 3
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    colour = "black",
+    linewidth = 0.8
+  ) +
+  ggtitle("GSE172274") +
+  xlab("Age (years)") +
+  ylab("PC2 score") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.4,
+      face = "bold"
+    ),
+    axis.title = element_text(
+      size = 12
+    ),
+    axis.text = element_text(
+      size = 10
+    ),
+    legend.title = element_text(
+      size = 13,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      size = 13
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "#3E76BC",
+      "#FCCE24"
+    ),
+    labels = c(
+      "SARS-CoV-2 + Adult",
+      "SARS-CoV-2 + Pediatric"
+    )
+  ) +
+  labs(
+    color = "Status"
+  )
+
+dev.off()
+
+
+# ============================================================================
+# 27. Sensitivity: continuous age
+# ============================================================================
+
+
+
 
 metadata_age <- sample_metadata_primary
 metadata_age$AgeScaled <- as.numeric(
@@ -1053,7 +1542,7 @@ age_coef <- grep(
 )
 
 if (length(age_coef) == 1) {
-
+  
   res_age <- results(
     dds_age,
     name = age_coef,
@@ -1061,11 +1550,11 @@ if (length(age_coef) == 1) {
     independentFiltering = TRUE,
     cooksCutoff = TRUE
   )
-
+  
   res_age_df <- as.data.frame(res_age)
   res_age_df$ENTREZID <- rownames(res_age_df)
   rownames(res_age_df) <- NULL
-
+  
   res_age_df <- merge(
     res_age_df,
     unique_annotation,
@@ -1073,7 +1562,7 @@ if (length(age_coef) == 1) {
     all.x = TRUE,
     sort = FALSE
   )
-
+  
   write.csv(
     res_age_df,
     file.path(
@@ -1086,7 +1575,7 @@ if (length(age_coef) == 1) {
 
 
 # ============================================================================
-# 25. Sensitivity: CPM filter
+# 28. Sensitivity: CPM filter
 # ============================================================================
 
 dds_cpm <- DESeqDataSetFromMatrix(
@@ -1134,130 +1623,104 @@ write.csv(
 )
 
 
-# ============================================================================
-# 26. Sensitivity: exclude pooled samples
-# ============================================================================
-
-metadata_no_pool <- sample_metadata_primary[
-  !sample_metadata_primary$IsPooled,
-  ,
-  drop = FALSE
-]
-
-if (
-  nrow(metadata_no_pool) >= 4 &&
-    length(unique(metadata_no_pool$Group)) == 2
-) {
-
-  rownames(metadata_no_pool) <- metadata_no_pool$GEO_ID
-
-  counts_no_pool_unfiltered <- counts_matrix[
-    ,
-    metadata_no_pool$GEO_ID,
-    drop = FALSE
-  ]
-
-  no_pool_group_sizes <- table(metadata_no_pool$Group)
-  no_pool_min_group_size <- min(no_pool_group_sizes)
-
-  keep_no_pool <- rowSums(
-    counts_no_pool_unfiltered >= MIN_COUNT
-  ) >= no_pool_min_group_size
-
-  counts_no_pool <- counts_no_pool_unfiltered[
-    keep_no_pool,
-    ,
-    drop = FALSE
-  ]
-
-  no_pool_sex_feasible <- (
-    nlevels(droplevels(metadata_no_pool$Sex)) >= 2
+# Compare effect estimates obtained with the primary and CPM-based filters.
+low_count_comparison <- res_primary_annotated %>%
+  dplyr::select(
+    ENTREZID,
+    SYMBOL,
+    log2FC_primary = log2FoldChange
+  ) %>%
+  inner_join(
+    res_cpm_df %>%
+      dplyr::select(
+        ENTREZID,
+        log2FC_CPM = log2FoldChange
+      ),
+    by = "ENTREZID"
+  ) %>%
+  filter(
+    !is.na(log2FC_primary),
+    !is.na(log2FC_CPM),
+    is.finite(log2FC_primary),
+    is.finite(log2FC_CPM)
   )
 
-  if (no_pool_sex_feasible) {
-    no_pool_design <- ~ Sex + Group
-  } else {
-    no_pool_design <- ~ Group
-  }
+write.csv(
+  low_count_comparison,
+  file.path(
+    sensitivity_dir,
+    paste0(
+      dataset_id,
+      "_primary_vs_CPM_filter_comparison.csv"
+    )
+  ),
+  row.names = FALSE
+)
 
-  dds_no_pool <- DESeqDataSetFromMatrix(
-    countData = counts_no_pool,
-    colData = metadata_no_pool,
-    design = no_pool_design
+tiff(
+  file.path(
+    sensitivity_figures_dir,
+    "Primary_vs_CPM_filter_GSE172274.tiff"
+  ),
+  res = 600,
+  width = 3700,
+  height = 2000,
+  compression = "lzw"
+)
+
+ggplot(
+  low_count_comparison,
+  aes(
+    x = log2FC_primary,
+    y = log2FC_CPM
   )
-
-  dds_no_pool <- DESeq(
-    dds_no_pool,
-    test = "Wald"
-  )
-
-  res_no_pool <- results(
-    dds_no_pool,
-    contrast = c(
-      "Group",
-      "Pediatric",
-      "Adult"
+) +
+  geom_point(
+    colour = "#3E76BC",
+    alpha = 0.45,
+    size = 1.4
+  ) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = 2,
+    colour = "black"
+  ) +
+  ggtitle("GSE172274") +
+  xlab("Primary filter: log2 fold change") +
+  ylab("CPM sensitivity filter: log2 fold change") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.4,
+      face = "bold"
     ),
-    alpha = ALPHA,
-    independentFiltering = TRUE,
-    cooksCutoff = TRUE
-  )
-
-  res_no_pool_df <- as.data.frame(res_no_pool)
-  res_no_pool_df$ENTREZID <- rownames(res_no_pool_df)
-  rownames(res_no_pool_df) <- NULL
-
-  res_no_pool_df <- merge(
-    res_no_pool_df,
-    unique_annotation,
-    by = "ENTREZID",
-    all.x = TRUE,
-    sort = FALSE
-  )
-
-  write.csv(
-    res_no_pool_df,
-    file.path(
-      sensitivity_dir,
-      paste0(dataset_id, "_DESeq2_without_pools.csv")
+    axis.title = element_text(
+      size = 12
     ),
-    row.names = FALSE
-  )
-
-  no_pool_summary <- data.frame(
-    Dataset = dataset_id,
-    Samples_without_pools = ncol(counts_no_pool),
-    Adult_samples_without_pools =
-      sum(metadata_no_pool$Group == "Adult"),
-    Pediatric_samples_without_pools =
-      sum(metadata_no_pool$Group == "Pediatric"),
-    Genes_after_filtering_without_pools =
-      nrow(counts_no_pool)
-  )
-
-  write.csv(
-    no_pool_summary,
-    file.path(
-      sensitivity_dir,
-      paste0(dataset_id, "_without_pools_summary.csv")
+    axis.text = element_text(
+      size = 10
     ),
-    row.names = FALSE
-  )
-
-} else {
-
-  writeLines(
-    "No-pool sensitivity analysis was not estimable.",
-    file.path(
-      sensitivity_dir,
-      paste0(dataset_id, "_without_pools_NOT_ESTIMABLE.txt")
+    legend.title = element_text(
+      size = 13,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      size = 13
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA
     )
   )
-}
+
+dev.off()
 
 
 # ============================================================================
-# 27. Sensitivity: Group x Sex interaction
+# 29. Sensitivity: Group x Sex interaction
 # ============================================================================
 
 interaction_feasible <- (
@@ -1267,26 +1730,26 @@ interaction_feasible <- (
 )
 
 if (interaction_feasible) {
-
+  
   dds_interaction <- DESeqDataSetFromMatrix(
     countData = counts_primary,
     colData = sample_metadata_primary,
     design = ~ Sex + Group + Sex:Group
   )
-
+  
   dds_interaction <- DESeq(
     dds_interaction,
     test = "Wald"
   )
-
+  
   interaction_coef <- grep(
     "Group.*Sex|Sex.*Group",
     resultsNames(dds_interaction),
     value = TRUE
   )
-
+  
   if (length(interaction_coef) == 1) {
-
+    
     res_interaction <- results(
       dds_interaction,
       name = interaction_coef,
@@ -1294,11 +1757,11 @@ if (interaction_feasible) {
       independentFiltering = TRUE,
       cooksCutoff = TRUE
     )
-
+    
     res_interaction_df <- as.data.frame(res_interaction)
     res_interaction_df$ENTREZID <- rownames(res_interaction_df)
     rownames(res_interaction_df) <- NULL
-
+    
     res_interaction_df <- merge(
       res_interaction_df,
       unique_annotation,
@@ -1306,7 +1769,7 @@ if (interaction_feasible) {
       all.x = TRUE,
       sort = FALSE
     )
-
+    
     write.csv(
       res_interaction_df,
       file.path(
@@ -1315,7 +1778,7 @@ if (interaction_feasible) {
       ),
       row.names = FALSE
     )
-
+    
     writeLines(
       paste(
         "Interaction coefficient:",
@@ -1326,9 +1789,9 @@ if (interaction_feasible) {
         paste0(dataset_id, "_group_sex_interaction_info.txt")
       )
     )
-
+    
   } else {
-
+    
     writeLines(
       "Interaction coefficient could not be identified uniquely.",
       file.path(
@@ -1337,9 +1800,9 @@ if (interaction_feasible) {
       )
     )
   }
-
+  
 } else {
-
+  
   writeLines(
     "Group x Sex interaction was not estimable because at least one Group x Sex cell was empty.",
     file.path(
@@ -1351,8 +1814,81 @@ if (interaction_feasible) {
 
 
 # ============================================================================
-# 28. Workflow summary
+# 30. Sensitivity summary
 # ============================================================================
+
+primary_significant_ids <- res_primary_annotated$ENTREZID[
+  !is.na(res_primary_annotated$padj) &
+    res_primary_annotated$padj < ALPHA
+]
+
+cpm_significant_ids <- res_cpm_df$ENTREZID[
+  !is.na(res_cpm_df$padj) &
+    res_cpm_df$padj < ALPHA
+]
+
+primary_cpm_correlation <- cor(
+  low_count_comparison$log2FC_primary,
+  low_count_comparison$log2FC_CPM,
+  use = "complete.obs",
+  method = "pearson"
+)
+
+continuous_age_significant <- if (
+  exists("res_age_df")
+) {
+  sum(
+    !is.na(res_age_df$padj) &
+      res_age_df$padj < ALPHA
+  )
+} else {
+  NA_integer_
+}
+
+interaction_significant <- if (
+  exists("res_interaction_df")
+) {
+  sum(
+    !is.na(res_interaction_df$padj) &
+      res_interaction_df$padj < ALPHA
+  )
+} else {
+  NA_integer_
+}
+
+sensitivity_summary <- data.frame(
+  Dataset = dataset_id,
+  Primary_genes_tested = nrow(res_primary_annotated),
+  Primary_FDR_lt_0_05 = length(primary_significant_ids),
+  CPM_genes_tested = nrow(res_cpm_df),
+  CPM_FDR_lt_0_05 = length(cpm_significant_ids),
+  Primary_CPM_shared_significant = length(
+    intersect(
+      primary_significant_ids,
+      cpm_significant_ids
+    )
+  ),
+  Primary_CPM_log2FC_Pearson_r = primary_cpm_correlation,
+  Continuous_age_FDR_lt_0_05 = continuous_age_significant,
+  Group_by_sex_interaction_FDR_lt_0_05 = interaction_significant,
+  stringsAsFactors = FALSE
+)
+
+write.csv(
+  sensitivity_summary,
+  file.path(
+    sensitivity_dir,
+    paste0(dataset_id, "_sensitivity_summary.csv")
+  ),
+  row.names = FALSE
+)
+
+
+# ============================================================================
+# 31. Workflow summary
+# ============================================================================
+
+
 
 workflow_summary <- c(
   paste("Dataset:", dataset_id),
@@ -1386,10 +1922,6 @@ workflow_summary <- c(
   paste(
     "Pediatric samples:",
     sum(sample_metadata_primary$Group == "Pediatric")
-  ),
-  paste(
-    "Pooled libraries:",
-    sum(sample_metadata_primary$IsPooled, na.rm = TRUE)
   ),
   paste(
     "Genes before low-count filtering:",
@@ -1467,29 +1999,65 @@ workflow_summary <- c(
     "no p-value, FDR, direction, or effect-magnitude filtering"
   ),
   paste(
-    "Unique mappings:",
+    "Unique ENTREZID-to-SYMBOL mappings:",
     sum(
       annotation_diagnostics$AnnotationStatus ==
-        "Unique_symbol"
+        "Unique_symbol",
+      na.rm = TRUE
     )
   ),
   paste(
-    "Ambiguous mappings:",
+    "Ambiguous ENTREZID-to-SYMBOL mappings:",
     sum(
       annotation_diagnostics$AnnotationStatus ==
-        "Ambiguous_symbol"
+        "Ambiguous_symbol",
+      na.rm = TRUE
     )
   ),
   paste(
-    "Missing SYMBOL mappings:",
+    "Missing ENTREZID-to-SYMBOL mappings:",
     sum(
       annotation_diagnostics$AnnotationStatus ==
-        "No_symbol"
+        "No_symbol",
+      na.rm = TRUE
     )
   ),
   paste(
     "Genes eligible for later SYMBOL-based harmonization:",
     nrow(meta_input)
+  ),
+  paste(
+    "GSEA ranking:",
+    "complete unfiltered DESeq2 Wald statistic (stat), descending"
+  ),
+  paste(
+    "GSEA ranked genes exported:",
+    nrow(gsea_ranked)
+  ),
+  paste(
+    "VST matrix exported:",
+    paste0(nrow(vst_matrix), " genes x ", ncol(vst_matrix) - 1, " samples")
+  ),
+  paste(
+    "Diagnostic and sensitivity figures:",
+    "expression prevalence; raw-count distribution; PCA; PC2-vs-age; primary-vs-CPM filter comparison"
+  ),
+  paste(
+    "Primary-vs-CPM log2FC Pearson correlation:",
+    round(primary_cpm_correlation, 6)
+  ),
+  paste(
+    "Primary significant genes retained under CPM sensitivity:",
+    paste0(
+      length(
+        intersect(
+          primary_significant_ids,
+          cpm_significant_ids
+        )
+      ),
+      " / ",
+      length(primary_significant_ids)
+    )
   )
 )
 
@@ -1503,7 +2071,7 @@ writeLines(
 
 
 # ============================================================================
-# 29. Reproducibility
+# 32. Reproducibility
 # ============================================================================
 
 writeLines(
@@ -1533,7 +2101,7 @@ writeLines(
 
 
 # ============================================================================
-# 30. Final summary
+# 33. Final summary
 # ============================================================================
 
 message("")
@@ -1565,3 +2133,4 @@ message(
   results_root
 )
 message("============================================================")
+
