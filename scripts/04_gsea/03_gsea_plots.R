@@ -1,38 +1,14 @@
-# =============================================================================
-# 03_GSEA_metabolism_and_figures_v2.R
+# GSEA plots: cross-cohort NES heatmaps, shared leading-edge genes and
+# enrichment curves of selected pathways (pediatric = yellow, adult = blue).
+# Each figure is saved separately.
 #
-# Publication-oriented visualization of cross-cohort pre-ranked GSEA results.
-#
-# Design principles
-#   - Each figure is exported separately.
-#   - No descriptive plot titles or subtitles are placed inside the panels.
-#   - Panel letters are retained for manuscript assembly.
-#   - Pathway labels use sentence case.
-#   - Adult-enriched = blue.
-#   - Pediatric-enriched = yellow.
-#   - Positive NES = Pediatric-enriched.
-#   - Negative NES = Adult-enriched.
-#
-# Main outputs
-#   A. Global cross-cohort NES heatmap
-#   B. Metabolism-focused NES heatmap
-#   C. Shared leading-edge genes
-#   D. Representative pediatric-enriched GSEA curves
-#   E. Representative adult-enriched GSEA curves
-#
-# Extended GSEA curves are exported separately for supplementary use.
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project.
-# =============================================================================
+# Output: results/gsea/figures_final/
 
 SCRIPT_BUILD <- "GSEA_FIGURES_2026-08-17_v2"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "fgsea",
@@ -63,9 +39,7 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
 ALPHA <- 0.05
 
@@ -170,9 +144,7 @@ dir.create(
 )
 
 
-# =============================================================================
-# 02. Validate inputs
-# =============================================================================
+# 02. Validate inputs ----
 
 required_files <- c(
   gsea_long_file,
@@ -196,9 +168,7 @@ if (length(missing_files) > 0) {
 }
 
 
-# =============================================================================
-# 03. Read results
-# =============================================================================
+# 03. Read results ----
 
 gsea_long <- read.csv(
   gsea_long_file,
@@ -246,9 +216,7 @@ leading_edge <- leading_edge %>%
   )
 
 
-# =============================================================================
-# 04. Clean pathway labels
-# =============================================================================
+# 04. Clean pathway labels ----
 
 # Remove database prefixes, convert underscores to spaces, and use sentence case.
 # This keeps pathway names visually clean and avoids all-uppercase labels.
@@ -294,9 +262,7 @@ concordance <- concordance %>%
   )
 
 
-# =============================================================================
-# 05. Global representative pathway selection
-# =============================================================================
+# 05. Global representative pathway selection ----
 
 # Only pathways:
 #   - tested in all 3 cohorts,
@@ -413,9 +379,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 06. FIGURE A — Global cross-cohort NES heatmap
-# =============================================================================
+# 06. FIGURE A — Global cross-cohort NES heatmap ----
 
 figure_A_data <- gsea_long %>%
   semi_join(
@@ -577,9 +541,7 @@ ggsave(
 )
 
 
-# =============================================================================
-# 07. Metabolism-focused pathway selection
-# =============================================================================
+# 07. Metabolism-focused pathway selection ----
 
 metabolic_regex <- paste(
   c(
@@ -629,9 +591,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 08. Reduce metabolic redundancy
-# =============================================================================
+# 08. Reduce metabolic redundancy ----
 
 metabolic_theme_patterns <- c(
   "BILE_ACID_METABOL",
@@ -698,9 +658,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 09. FIGURE B — Metabolism-focused NES heatmap
-# =============================================================================
+# 09. FIGURE B — Metabolism-focused NES heatmap ----
 
 figure_B_data <- gsea_long %>%
   semi_join(
@@ -841,9 +799,7 @@ ggsave(
 )
 
 
-# =============================================================================
-# 10. Select pathways for leading-edge analysis and GSEA curves
-# =============================================================================
+# 10. Select pathways for leading-edge analysis and GSEA curves ----
 
 curve_theme_patterns <- c(
   "HUMORAL_IMMUNE_RESPONSE$",
@@ -902,9 +858,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 11. FIGURE C — Shared leading-edge genes
-# =============================================================================
+# 11. FIGURE C — Shared leading-edge genes ----
 
 leading_edge_selected <- leading_edge %>%
   semi_join(
@@ -1037,9 +991,7 @@ ggsave(
 )
 
 
-# =============================================================================
-# 12. Retrieve gene sets for enrichment curves
-# =============================================================================
+# 12. Retrieve gene sets for enrichment curves ----
 
 msig_human <- msigdbr::msigdbr(
   species = "Homo sapiens"
@@ -1061,9 +1013,7 @@ pathway_gene_lists <- split(
 )
 
 
-# =============================================================================
-# 13. Read complete cohort rankings
-# =============================================================================
+# 13. Read complete cohort rankings ----
 
 rank_172274 <- read.csv(
   rank_files["GSE172274"],
@@ -1105,9 +1055,7 @@ stats_231409 <- sort(
 )
 
 
-# =============================================================================
-# 14. Select one representative Pediatric and one representative Adult pathway
-# =============================================================================
+# 14. Select one representative Pediatric and one representative Adult pathway ----
 
 representative_pediatric <- curve_pathways_table %>%
   filter(
@@ -1146,9 +1094,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 15. FIGURE D — Representative Pediatric-enriched GSEA curves
-# =============================================================================
+# 15. FIGURE D — Representative Pediatric-enriched GSEA curves ----
 
 if (nrow(representative_pediatric) == 1) {
 
@@ -1350,9 +1296,7 @@ if (nrow(representative_pediatric) == 1) {
 }
 
 
-# =============================================================================
-# 16. FIGURE E — Representative Adult-enriched GSEA curves
-# =============================================================================
+# 16. FIGURE E — Representative Adult-enriched GSEA curves ----
 
 if (nrow(representative_adult) == 1) {
 
@@ -1542,9 +1486,7 @@ if (nrow(representative_adult) == 1) {
 }
 
 
-# =============================================================================
-# 17. Export all selected enrichment curves separately for supplementary use
-# =============================================================================
+# 17. Export all selected enrichment curves separately for supplementary use ----
 
 for (pathway_i in curve_pathways_table$pathway) {
 
@@ -1733,9 +1675,7 @@ for (pathway_i in curve_pathways_table$pathway) {
 }
 
 
-# =============================================================================
-# 18. Export leading-edge gene table
-# =============================================================================
+# 18. Export leading-edge gene table ----
 
 leading_edge_gene_table <- leading_edge_selected %>%
   dplyr::select(
@@ -1761,9 +1701,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 19. Figure summary
-# =============================================================================
+# 19. Figure summary ----
 
 summary_text <- c(
   paste(
@@ -1826,9 +1764,7 @@ cat(
 )
 
 
-# =============================================================================
-# 20. Reproducibility
-# =============================================================================
+# 20. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -1841,9 +1777,7 @@ writeLines(
 )
 
 
-# =============================================================================
-# 21. Final message
-# =============================================================================
+# 21. Final message ----
 
 message("")
 message("============================================================")

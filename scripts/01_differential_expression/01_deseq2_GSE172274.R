@@ -1,44 +1,19 @@
-# =============================================================================
-# 01_GSE172274_deseq2.R
+# Differential expression in GSE172274 (Pierce et al., 2021)
 #
-# Differential expression analysis of GSE172274
+# SARS-CoV-2-positive upper-airway samples, pediatric (< 18 y) vs adult (>= 18 y).
+# DESeq2 design ~ Sex + Group (reference: Adult). Genes are kept when the raw
+# count is >= 10 in at least as many samples as the smaller age group.
+# The script also fits the models used in the sensitivity analyses
+# (continuous age, CPM >= 1 filter, Sex x Group interaction).
 #
-# This script reproduces the cohort-level RNA-seq analysis used for the
-# cross-cohort comparison of pediatric and adult SARS-CoV-2-positive samples.
-#
-# Primary analysis
-#   - Pediatric: age < 18 years
-#   - Adult: age >= 18 years
-#   - DESeq2 design: ~ Sex + Group, when sex adjustment is estimable
-#   - Contrast: Pediatric vs Adult
-#   - Positive log2FoldChange: higher expression in Pediatric samples
-#   - Low-count filter: raw count >= 10 in at least the size of the smaller
-#     age group
-#
-# Sensitivity analyses
-#   - Age modeled as a continuous variable
-#   - Alternative prevalence filter: CPM >= 1 in at least the size of the
-#     smaller age group
-#   - Group-by-sex interaction, when estimable
-#
-# Downstream outputs
-#   - Complete cohort-level DESeq2 results
-#   - Unshrunken log2FC and SE for cross-cohort meta-analysis
-#   - Genome-wide ranked statistics for pre-ranked GSEA
-#   - Normalized-count and VST matrices
-#   - QC, PCA, annotation, and sensitivity diagnostics
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project. Paths are resolved
-#   with here::here(); no machine-specific working directory is required.
-#
-# The script is intentionally linear and does not define custom functions.
-# =============================================================================
+# Input : data/raw/GSE172274/
+# Output: results/deseq2/GSE172274/
+
+SCRIPT_BUILD <- "GSE172274_DESEQ2_2026-10-26"
+message("Running script build: ", SCRIPT_BUILD)
 
 
-# ============================================================================
-# 00. Packages
-# ============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "GEOquery",
@@ -75,9 +50,7 @@ suppressPackageStartupMessages({
 })
 
 
-# ============================================================================
-# 01. Configuration
-# ============================================================================
+# 01. Configuration ----
 
 dataset_id <- "GSE172274"
 
@@ -121,9 +94,7 @@ message("Project root: ", project_root)
 message("Results directory: ", results_root)
 
 
-# ============================================================================
-# 02. Download GEO metadata
-# ============================================================================
+# 02. Download GEO metadata ----
 
 message("Downloading GEO metadata for ", dataset_id, "...")
 
@@ -155,9 +126,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 03. Inspect metadata columns
-# ============================================================================
+# 03. Inspect metadata columns ----
 
 metadata_columns <- colnames(metadata_raw)
 
@@ -209,9 +178,7 @@ if (length(respiratory_score_column) > 0) {
 }
 
 
-# ============================================================================
-# 04. Curate metadata
-# ============================================================================
+# 04. Curate metadata ----
 
 sample_metadata <- data.frame(
   GEO_ID = as.character(metadata_raw$geo_accession),
@@ -254,10 +221,7 @@ sample_metadata$Group <- ifelse(
 )
 
 
-
-# ============================================================================
-# 05. Document diagnosis labels
-# ============================================================================
+# 05. Document diagnosis labels ----
 
 diagnosis_summary <- sample_metadata %>%
   count(Diagnosis, name = "N")
@@ -271,9 +235,7 @@ write.csv(
 print(diagnosis_summary)
 
 
-# ============================================================================
-# 06. Exclude samples lacking age/group/sex for primary adjusted model
-# ============================================================================
+# 06. Exclude samples lacking age/group/sex for primary adjusted model ----
 
 excluded_metadata <- sample_metadata[
   is.na(sample_metadata$Age) |
@@ -311,9 +273,7 @@ if (nrow(sample_metadata_primary) == 0) {
 }
 
 
-# ============================================================================
-# 07. Download raw counts from NCBI GEO if absent
-# ============================================================================
+# 07. Download raw counts from NCBI GEO if absent ----
 
 counts_file <- file.path(
   data_dir,
@@ -365,9 +325,7 @@ if (!file.exists(counts_file)) {
 }
 
 
-# ============================================================================
-# 08. Load raw count matrix
-# ============================================================================
+# 08. Load raw count matrix ----
 
 raw_counts <- readr::read_tsv(
   counts_file,
@@ -428,9 +386,7 @@ if (any(abs(counts_matrix - round(counts_matrix)) > 1e-8)) {
 counts_matrix <- round(counts_matrix)
 
 
-# ============================================================================
-# 09. Match metadata and counts
-# ============================================================================
+# 09. Match metadata and counts ----
 
 samples_in_both <- intersect(
   sample_metadata_primary$GEO_ID,
@@ -491,9 +447,7 @@ stopifnot(
 )
 
 
-# ============================================================================
-# 10. Cohort composition
-# ============================================================================
+# 10. Cohort composition ----
 
 cohort_summary <- sample_metadata_primary %>%
   count(
@@ -530,9 +484,7 @@ capture.output(
 )
 
 
-# ============================================================================
-# 11. Primary low-count filtering
-# ============================================================================
+# 11. Primary low-count filtering ----
 
 group_sizes <- table(sample_metadata_primary$Group)
 
@@ -553,9 +505,7 @@ counts_primary <- counts_matrix[
 ]
 
 
-# ============================================================================
-# 12. CPM-based sensitivity filter
-# ============================================================================
+# 12. CPM-based sensitivity filter ----
 
 cpm_matrix <- edgeR::cpm(counts_matrix)
 
@@ -596,9 +546,7 @@ write.csv(
 print(filtering_summary)
 
 
-# ============================================================================
-# 13. Determine whether sex adjustment is feasible
-# ============================================================================
+# 13. Determine whether sex adjustment is feasible ----
 
 sex_adjustment_feasible <- (
   nlevels(droplevels(sample_metadata_primary$Sex)) >= 2
@@ -614,9 +562,7 @@ if (sex_adjustment_feasible) {
 }
 
 
-# ============================================================================
-# 14. Primary DESeq2 model
-# ============================================================================
+# 14. Primary DESeq2 model ----
 
 dds_primary <- DESeqDataSetFromMatrix(
   countData = counts_primary,
@@ -630,6 +576,48 @@ dds_primary <- DESeq(
 )
 
 print(resultsNames(dds_primary))
+
+# Exact primary-model specification  ----
+# This is the model whose results feed BOTH the meta-analysis (unshrunken
+# log2FC/SE) and the pre-ranked GSEA (Wald statistic).
+
+model_specification <- data.frame(
+  Dataset = dataset_id,
+  Design = paste(deparse(design(dds_primary)), collapse = ""),
+  Contrast = "Group: Pediatric vs Adult (reference = Adult)",
+  Test = "Wald",
+  Age_group_rule = "Pediatric < 18 years; Adult >= 18 years",
+  N_Adult = sum(colData(dds_primary)$Group == "Adult"),
+  N_Pediatric = sum(colData(dds_primary)$Group == "Pediatric"),
+  N_Female = sum(colData(dds_primary)$Sex == "Female"),
+  N_Male = sum(colData(dds_primary)$Sex == "Male"),
+  N_Batch_levels = if ("Batch" %in% colnames(colData(dds_primary))) {
+    nlevels(droplevels(as.factor(colData(dds_primary)$Batch)))
+  } else {
+    NA
+  },
+  Low_count_rule = paste0(
+    "raw count >= 10 in >= ",
+    min_group_size,
+    " samples"
+  ),
+  N_genes_tested = nrow(dds_primary),
+  Coefficients = paste(resultsNames(dds_primary), collapse = "; "),
+  DESeq2_version = as.character(packageVersion("DESeq2")),
+  Script_build = SCRIPT_BUILD,
+  stringsAsFactors = FALSE
+)
+
+write.csv(
+  model_specification,
+  file.path(
+    results_root,
+    paste0(dataset_id, "_primary_model_specification.csv")
+  ),
+  row.names = FALSE
+)
+
+print(model_specification)
 
 res_primary <- results(
   dds_primary,
@@ -651,9 +639,7 @@ res_primary_df <- res_primary_df %>%
   relocate(ENTREZID)
 
 
-# ============================================================================
-# 15. Annotation diagnostics
-# ============================================================================
+# 15. Annotation diagnostics ----
 
 annotation_list <- AnnotationDbi::mapIds(
   org.Hs.eg.db,
@@ -753,9 +739,7 @@ res_primary_annotated$MetaEligibleAnnotation <- (
 )
 
 
-# ============================================================================
-# 16. Export COMPLETE primary DESeq2 results
-# ============================================================================
+# 16. Export COMPLETE primary DESeq2 results ----
 
 write.csv(
   res_primary_annotated,
@@ -767,9 +751,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 17. Export meta-analysis input
-# ============================================================================
+# 17. Export meta-analysis input ----
 
 # All technically eligible genes are retained; significance and effect direction
 # are evaluated downstream.
@@ -806,9 +788,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 18. Shrinkage for visualization only
-# ============================================================================
+# 18. Shrinkage for visualization only ----
 
 expected_coef <- "Group_Pediatric_vs_Adult"
 
@@ -846,9 +826,7 @@ if (expected_coef %in% resultsNames(dds_primary)) {
 }
 
 
-# ============================================================================
-# 19. Normalized counts
-# ============================================================================
+# 19. Normalized counts ----
 
 normalized_counts <- counts(
   dds_primary,
@@ -872,9 +850,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 20. Export matrices/tables for downstream pathway analysis (GSEA)
-# ============================================================================
+# 20. Export matrices/tables for downstream pathway analysis (GSEA) ----
 
 # VST matrix: useful for downstream visualization and exploratory analyses.
 vsd_export <- vst(
@@ -930,9 +906,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 21. Size factors
-# ============================================================================
+# 21. Size factors ----
 
 size_factor_table <- data.frame(
   Sample = names(sizeFactors(dds_primary)),
@@ -949,9 +923,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 22. Dispersion diagnostics
-# ============================================================================
+# 22. Dispersion diagnostics ----
 
 tiff(
   file.path(
@@ -978,9 +950,7 @@ if (is.null(dispersion_fit_type)) {
 }
 
 
-# ============================================================================
-# 23. Independent filtering
-# ============================================================================
+# 23. Independent filtering ----
 
 res_metadata <- S4Vectors::metadata(res_primary)
 
@@ -993,9 +963,7 @@ if (!is.null(filter_threshold)) {
 }
 
 
-# ============================================================================
-# 24. Cook's distance diagnostics
-# ============================================================================
+# 24. Cook's distance diagnostics ----
 
 cooks_matrix <- assays(dds_primary)[["cooks"]]
 
@@ -1035,9 +1003,7 @@ if (!is.null(cooks_matrix)) {
 }
 
 
-# ============================================================================
-# 25. PCA
-# ============================================================================
+# 25. PCA ----
 
 # PCA styling and export settings are kept consistent with the manuscript.
 
@@ -1141,35 +1107,30 @@ ggplot(
 dev.off()
 
 
-# ---------------------------------------------------------------------------
-# Quantitative assessment of age and sex associations with PC1 and PC2.
-# ---------------------------------------------------------------------------
+# Quantitative assessment of age and sex associations with PC1 and PC2. ----
 
-pca_scores <- as.data.frame(
-  pcaData
+# PC scores and sample metadata are combined by column position: plotPCA()
+# returns one row per column of the transformed object, in the same order as
+# colData(). This avoids depending on the identifier used as row names or on
+# the columns returned by plotPCA(), which differ between DESeq2 versions.
+if (nrow(pcaData) != ncol(rld)) {
+  stop("plotPCA() returned ", nrow(pcaData), " rows for ", ncol(rld), " samples.")
+}
+
+pca_metadata <- as.data.frame(
+  colData(rld)
 )
 
-pca_scores$GEO_ID <- rownames(
-  pcaData
+pca_scores <- data.frame(
+  GEO_ID = colnames(rld),
+  PC1 = pcaData$PC1,
+  PC2 = pcaData$PC2,
+  stringsAsFactors = FALSE
 )
 
-rownames(pca_scores) <- NULL
-
-# plotPCA(returnData = TRUE) already contains the Group column.
-# Join only the additional metadata required for quantitative analyses to avoid
-# creating Group.x / Group.y during the merge.
-pca_scores <- merge(
-  pca_scores,
-  sample_metadata_primary %>%
-    dplyr::select(
-      GEO_ID,
-      Age,
-      Sex
-    ),
-  by = "GEO_ID",
-  all.x = TRUE,
-  sort = FALSE
-)
+pca_scores$Group <- pca_metadata$Group
+pca_scores$Age <- pca_metadata$Age
+pca_scores$Sex <- pca_metadata$Sex
 
 if (!all(c("Group", "Age", "Sex") %in% colnames(pca_scores))) {
   stop(
@@ -1241,18 +1202,14 @@ writeLines(
 )
 
 
-# ============================================================================
-# 26. Expression and PCA diagnostics
-# ============================================================================
+# 26. Expression and PCA diagnostics ----
 
 # Expression prevalence and raw-count distributions are exported to document
 # the behavior of the primary prevalence filter. Figure styling follows the
 # PCA used in the manuscript (theme_bw, black border, 600-dpi TIFF output).
 
 
-# ---------------------------------------------------------------------------
-# 26A. Expression prevalence
-# ---------------------------------------------------------------------------
+# 26A. Expression prevalence ----
 
 expression_prevalence <- data.frame(
   ENTREZID = rownames(counts_matrix),
@@ -1325,9 +1282,7 @@ ggplot(
 dev.off()
 
 
-# ---------------------------------------------------------------------------
-# 26B. Raw-count distribution by age group
-# ---------------------------------------------------------------------------
+# 26B. Raw-count distribution by age group ----
 
 raw_count_long <- as.data.frame(counts_matrix)
 raw_count_long$ENTREZID <- rownames(raw_count_long)
@@ -1424,9 +1379,7 @@ ggplot(
 dev.off()
 
 
-# ---------------------------------------------------------------------------
-# 26C. Age association with PC2
-# ---------------------------------------------------------------------------
+# 26C. Age association with PC2 ----
 
 # PC2 showed the strongest quantitative association with age in the evaluated
 # cohort. This plot complements, but does not replace, the formal linear models
@@ -1506,11 +1459,7 @@ ggplot(
 dev.off()
 
 
-# ============================================================================
-# 27. Sensitivity: continuous age
-# ============================================================================
-
-
+# 27. Sensitivity: continuous age ----
 
 
 metadata_age <- sample_metadata_primary
@@ -1574,9 +1523,7 @@ if (length(age_coef) == 1) {
 }
 
 
-# ============================================================================
-# 28. Sensitivity: CPM filter
-# ============================================================================
+# 28. Sensitivity: CPM filter ----
 
 dds_cpm <- DESeqDataSetFromMatrix(
   countData = counts_cpm,
@@ -1719,9 +1666,7 @@ ggplot(
 dev.off()
 
 
-# ============================================================================
-# 29. Sensitivity: Group x Sex interaction
-# ============================================================================
+# 29. Sensitivity: Group x Sex interaction ----
 
 interaction_feasible <- (
   nlevels(droplevels(sample_metadata_primary$Sex)) == 2 &&
@@ -1813,9 +1758,7 @@ if (interaction_feasible) {
 }
 
 
-# ============================================================================
-# 30. Sensitivity summary
-# ============================================================================
+# 30. Sensitivity summary ----
 
 primary_significant_ids <- res_primary_annotated$ENTREZID[
   !is.na(res_primary_annotated$padj) &
@@ -1884,10 +1827,7 @@ write.csv(
 )
 
 
-# ============================================================================
-# 31. Workflow summary
-# ============================================================================
-
+# 31. Workflow summary ----
 
 
 workflow_summary <- c(
@@ -2070,9 +2010,7 @@ writeLines(
 )
 
 
-# ============================================================================
-# 32. Reproducibility
-# ============================================================================
+# 32. Reproducibility ----
 
 writeLines(
   capture.output(sessionInfo()),
@@ -2100,9 +2038,7 @@ writeLines(
 )
 
 
-# ============================================================================
-# 33. Final summary
-# ============================================================================
+# 33. Final summary ----
 
 message("")
 message("============================================================")
@@ -2133,4 +2069,3 @@ message(
   results_root
 )
 message("============================================================")
-

@@ -1,42 +1,14 @@
-# =============================================================================
-# 04_meta_analysis_figures.R
+# Plots and summary tables of the meta-analysis
+# (RE vs FE estimates, effect vs I^2, direction consistency, forest plots and
+# leave-one-out plots). Nothing is re-tested here.
 #
-# Publication-ready figures and reporting tables for the transcriptomic
-# random-effects meta-analysis.
-#
-# Inputs
-#   results/meta_analysis/primary/meta_analysis_REM_all_genes.csv
-#   results/meta_analysis/sensitivity/robustness_classification.csv
-#   results/meta_analysis/sensitivity/leave_one_out_results.csv
-#
-# Figures
-#   1. RE versus FE pooled effects
-#   2. Pooled random-effects estimate versus I2
-#   3. Direction-consistency summary among significant genes
-#   4. Forest plots for primary significant genes
-#   5. Leave-one-dataset-out plots for significant k=3 genes
-#
-# Tables
-#   - Primary significant genes
-#   - Robust genes
-#   - Complete meta-analysis table
-#
-# Important
-#   This script performs visualization and reporting only. It does not redefine
-#   statistical significance, recalculate FDR, or select genes using new
-#   inferential criteria.
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project.
-# =============================================================================
+# Output: results/meta_analysis/figures/, results/meta_analysis/tables/
 
 SCRIPT_BUILD <- "META_FIGURES_2026-08-17_v1"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "tidyverse",
@@ -61,9 +33,7 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
 ALPHA <- 0.05
 
@@ -155,15 +125,13 @@ message("Figures directory: ", figures_dir)
 message("Tables directory: ", tables_dir)
 
 
-# =============================================================================
-# 02. Validate inputs
-# =============================================================================
+# 02. Validate inputs ----
 
 if (!file.exists(primary_file)) {
   stop(
     "Primary meta-analysis file not found:\n",
     primary_file,
-    "\nRun 02_random_effects_meta_analysis.R first."
+    "\nRun 02_random_effects_model.R first."
   )
 }
 
@@ -171,7 +139,7 @@ if (!file.exists(robustness_file)) {
   stop(
     "Robustness classification file not found:\n",
     robustness_file,
-    "\nRun 03_meta_analysis_robustness.R first."
+    "\nRun 03_leave_one_out_robustness.R first."
   )
 }
 
@@ -179,14 +147,12 @@ if (!file.exists(leave_one_out_file)) {
   stop(
     "Leave-one-out results file not found:\n",
     leave_one_out_file,
-    "\nRun 03_meta_analysis_robustness.R first."
+    "\nRun 03_leave_one_out_robustness.R first."
   )
 }
 
 
-# =============================================================================
-# 03. Read results
-# =============================================================================
+# 03. Read results ----
 
 meta_results <- read.csv(
   primary_file,
@@ -287,9 +253,7 @@ if (length(missing_loo_columns) > 0) {
 }
 
 
-# =============================================================================
-# 04. Standardize types
-# =============================================================================
+# 04. Standardize types ----
 
 meta_results <- meta_results %>%
   mutate(
@@ -333,9 +297,7 @@ leave_one_out <- leave_one_out %>%
   )
 
 
-# =============================================================================
-# 05. Merge primary and robustness results
-# =============================================================================
+# 05. Merge primary and robustness results ----
 
 plot_results <- meta_results %>%
   left_join(
@@ -359,9 +321,7 @@ plot_results$RobustnessClass[
 ] <- "Not_classified"
 
 
-# =============================================================================
-# 06. Export manuscript-oriented tables
-# =============================================================================
+# 06. Export manuscript-oriented tables ----
 
 table_significant <- plot_results %>%
   filter(
@@ -454,9 +414,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 07. Common publication theme
-# =============================================================================
+# 07. Common publication theme ----
 
 publication_theme <- theme_classic(
   base_size = 12
@@ -487,9 +445,7 @@ publication_theme <- theme_classic(
   )
 
 
-# =============================================================================
-# 08. Figure 1: Random-effects versus fixed-effect pooled estimates
-# =============================================================================
+# 08. Figure 1: Random-effects versus fixed-effect pooled estimates ----
 
 re_fe_plot_data <- plot_results %>%
   filter(
@@ -555,9 +511,7 @@ ggsave(
 )
 
 
-# =============================================================================
-# 09. Figure 2: Random-effects estimate versus heterogeneity
-# =============================================================================
+# 09. Figure 2: Random-effects estimate versus heterogeneity ----
 
 heterogeneity_plot_data <- plot_results %>%
   filter(
@@ -622,9 +576,7 @@ ggsave(
 )
 
 
-# =============================================================================
-# 10. Figure 3: Direction patterns among significant genes
-# =============================================================================
+# 10. Figure 3: Direction patterns among significant genes ----
 
 direction_plot_data <- plot_results %>%
   filter(
@@ -690,9 +642,7 @@ if (nrow(direction_plot_data) > 0) {
 }
 
 
-# =============================================================================
-# 11. Prepare genes for forest plots
-# =============================================================================
+# 11. Prepare genes for forest plots ----
 
 forest_genes <- plot_results %>%
   filter(
@@ -712,9 +662,7 @@ message(
 )
 
 
-# =============================================================================
-# 12. Forest plots for primary significant genes
-# =============================================================================
+# 12. Forest plots for primary significant genes ----
 
 for (current_gene in forest_genes) {
 
@@ -865,9 +813,7 @@ for (current_gene in forest_genes) {
 }
 
 
-# =============================================================================
-# 13. Prepare significant k=3 genes for leave-one-out plots
-# =============================================================================
+# 13. Prepare significant k=3 genes for leave-one-out plots ----
 
 loo_genes <- plot_results %>%
   filter(
@@ -888,9 +834,7 @@ message(
 )
 
 
-# =============================================================================
-# 14. Leave-one-dataset-out plots
-# =============================================================================
+# 14. Leave-one-dataset-out plots ----
 
 for (current_gene in loo_genes) {
 
@@ -1023,9 +967,7 @@ for (current_gene in loo_genes) {
 }
 
 
-# =============================================================================
-# 15. Export figure-generation summary
-# =============================================================================
+# 15. Export figure-generation summary ----
 
 n_all <- nrow(
   plot_results
@@ -1142,9 +1084,7 @@ cat(
 )
 
 
-# =============================================================================
-# 16. Reproducibility
-# =============================================================================
+# 16. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -1186,9 +1126,7 @@ writeLines(
 )
 
 
-# =============================================================================
-# 17. Final message
-# =============================================================================
+# 17. Final message ----
 
 message("")
 message("============================================================")

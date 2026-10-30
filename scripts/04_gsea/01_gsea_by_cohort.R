@@ -1,55 +1,17 @@
-# =============================================================================
-# 01_GSEA_by_cohort.R
+# Pre-ranked GSEA in each cohort (fgsea::fgseaMultilevel)
 #
-# Pre-ranked GSEA performed independently in each RNA-seq cohort.
+# Genes are ranked by the DESeq2 Wald statistic of each cohort (positive =
+# higher in pediatric samples); no filtering is applied before GSEA.
+# Collections: MSigDB Hallmark, Reactome, KEGG and GO Biological Process.
 #
-# Reviewer-facing objective
-#   The reviewer requested a pathway-level cross-cohort analysis using COMPLETE
-#   ranked gene lists rather than over-representation analysis of a small set
-#   of significant genes. This script performs the first stage of that analysis:
-#   identical pre-ranked GSEA within each cohort.
-#
-# Cohorts
-#   - GSE172274
-#   - GSE179277
-#   - GSE231409
-#
-# Ranking metric
-#   - DESeq2 Wald statistic exported by each final cohort-level pipeline.
-#   - Positive statistic = Pediatric-enriched.
-#   - Negative statistic = Adult-enriched.
-#   - No p-value, FDR, direction, or effect-size filtering is applied before GSEA.
-#
-# Gene-set collections
-#   - MSigDB Hallmark
-#   - MSigDB Reactome
-#   - MSigDB KEGG (all currently available KEGG subcollections)
-#   - MSigDB Gene Ontology Biological Process
-#
-# GSEA engine
-#   - fgsea::fgseaMultilevel()
-#
-# Primary outputs
-#   results/gsea/by_cohort/<DATASET>/
-#       GSEA_Hallmark.csv
-#       GSEA_Reactome.csv
-#       GSEA_KEGG.csv
-#       GSEA_GO_BP.csv
-#       GSEA_all_collections.csv
-#       GSEA_significant_FDR05.csv
-#       GSEA_summary.txt
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project.
-# =============================================================================
+# Input : results/deseq2/<cohort>/primary/<cohort>_GSEA_ranked_genes.csv
+# Output: results/gsea/by_cohort/<cohort>/, results/gsea/GSEA_all_cohorts_long.csv
 
 SCRIPT_BUILD <- "GSEA_BY_COHORT_2026-08-17_v1"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "fgsea",
@@ -82,9 +44,7 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
 ALPHA <- 0.05
 
@@ -153,9 +113,7 @@ dir.create(
 )
 
 
-# =============================================================================
-# 02. Validate cohort-ranked input files
-# =============================================================================
+# 02. Validate cohort-ranked input files ----
 
 missing_input_files <- input_files[
   !file.exists(input_files)
@@ -179,9 +137,7 @@ if (length(missing_input_files) > 0) {
 message("All three cohort-level GSEA ranked files were found.")
 
 
-# =============================================================================
-# 03. Retrieve MSigDB human gene sets
-# =============================================================================
+# 03. Retrieve MSigDB human gene sets ----
 
 # Retrieve the human MSigDB collections once so that exactly the same gene-set
 # definitions are used for all three cohorts.
@@ -232,9 +188,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 04. Define pathway collections
-# =============================================================================
+# 04. Define pathway collections ----
 
 # Hallmark
 msig_hallmark <- msig_human %>%
@@ -290,9 +244,7 @@ msig_go_bp <- msig_human %>%
   distinct()
 
 
-# =============================================================================
-# 05. Validate pathway collections
-# =============================================================================
+# 05. Validate pathway collections ----
 
 collection_sizes <- data.frame(
   Collection = c(
@@ -336,9 +288,7 @@ if (any(collection_sizes$N_pathways == 0)) {
 }
 
 
-# =============================================================================
-# 06. Convert pathway tables to fgsea pathway lists
-# =============================================================================
+# 06. Convert pathway tables to fgsea pathway lists ----
 
 pathways_hallmark <- split(
   msig_hallmark$gene_symbol,
@@ -361,9 +311,7 @@ pathways_go_bp <- split(
 )
 
 
-# =============================================================================
-# 07. Preallocate combined result containers
-# =============================================================================
+# 07. Preallocate combined result containers ----
 
 all_gsea_results <- list()
 
@@ -380,9 +328,7 @@ input_diagnostics <- data.frame(
 )
 
 
-# =============================================================================
-# 08. Run identical pre-ranked GSEA separately in each cohort
-# =============================================================================
+# 08. Run identical pre-ranked GSEA separately in each cohort ----
 
 for (dataset_id in dataset_ids) {
 
@@ -403,9 +349,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08A. Read complete ranked gene list
-  # ---------------------------------------------------------------------------
+  # 08A. Read complete ranked gene list ----
 
   ranked_table <- read.csv(
     input_files[dataset_id],
@@ -443,9 +387,7 @@ for (dataset_id in dataset_ids) {
     )
 
 
-  # ---------------------------------------------------------------------------
-  # 08B. Validate ranking
-  # ---------------------------------------------------------------------------
+  # 08B. Validate ranking ----
 
   n_missing_symbol <- sum(
     is.na(ranked_table$SYMBOL) |
@@ -522,9 +464,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08C. Create named pre-ranked statistic vector
-  # ---------------------------------------------------------------------------
+  # 08C. Create named pre-ranked statistic vector ----
 
   gene_stats <- ranked_table$ranking_statistic
 
@@ -540,9 +480,7 @@ for (dataset_id in dataset_ids) {
   #   negative Wald statistic -> Adult-enriched
 
 
-  # ---------------------------------------------------------------------------
-  # 08D. Hallmark GSEA
-  # ---------------------------------------------------------------------------
+  # 08D. Hallmark GSEA ----
 
   set.seed(172274)
 
@@ -599,9 +537,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08E. Reactome GSEA
-  # ---------------------------------------------------------------------------
+  # 08E. Reactome GSEA ----
 
   set.seed(179277)
 
@@ -658,9 +594,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08F. KEGG GSEA
-  # ---------------------------------------------------------------------------
+  # 08F. KEGG GSEA ----
 
   set.seed(231409)
 
@@ -717,9 +651,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08G. GO Biological Process GSEA
-  # ---------------------------------------------------------------------------
+  # 08G. GO Biological Process GSEA ----
 
   set.seed(20260817)
 
@@ -776,9 +708,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08H. Combine all collections for this cohort
-  # ---------------------------------------------------------------------------
+  # 08H. Combine all collections for this cohort ----
 
   gsea_all_dataset <- bind_rows(
     gsea_hallmark,
@@ -815,9 +745,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08I. Significant pathways for this cohort
-  # ---------------------------------------------------------------------------
+  # 08I. Significant pathways for this cohort ----
 
   gsea_significant_dataset <- gsea_all_dataset %>%
     filter(
@@ -844,9 +772,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08J. Collection-level summary for this cohort
-  # ---------------------------------------------------------------------------
+  # 08J. Collection-level summary for this cohort ----
 
   gsea_dataset_summary <- gsea_all_dataset %>%
     group_by(
@@ -881,9 +807,7 @@ for (dataset_id in dataset_ids) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # 08K. Dataset text summary
-  # ---------------------------------------------------------------------------
+  # 08K. Dataset text summary ----
 
   dataset_summary_text <- c(
     paste(
@@ -977,9 +901,7 @@ for (dataset_id in dataset_ids) {
 }
 
 
-# =============================================================================
-# 09. Export input diagnostics
-# =============================================================================
+# 09. Export input diagnostics ----
 
 write.csv(
   input_diagnostics,
@@ -991,9 +913,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 10. Combine cohort-level GSEA results
-# =============================================================================
+# 10. Combine cohort-level GSEA results ----
 
 gsea_all_cohorts <- bind_rows(
   all_gsea_results
@@ -1014,9 +934,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 11. Export significant pathways across all cohort-specific runs
-# =============================================================================
+# 11. Export significant pathways across all cohort-specific runs ----
 
 gsea_all_cohorts_significant <- gsea_all_cohorts %>%
   filter(
@@ -1039,9 +957,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 12. Export preliminary cross-cohort pathway coverage
-# =============================================================================
+# 12. Export preliminary cross-cohort pathway coverage ----
 
 # This is NOT yet the final pathway concordance analysis. It simply identifies
 # which pathways were tested in one, two, or all three cohorts so that script 02
@@ -1076,9 +992,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 13. Reproducibility
-# =============================================================================
+# 13. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -1156,9 +1070,7 @@ writeLines(
 )
 
 
-# =============================================================================
-# 14. Final summary
-# =============================================================================
+# 14. Final summary ----
 
 final_summary <- c(
   paste(
@@ -1195,7 +1107,7 @@ final_summary <- c(
   ),
   "",
   "Next analysis:",
-  "  02_GSEA_cross_cohort_concordance.R",
+  "  02_cross_cohort_concordance.R",
   "  This will compare NES, FDR, direction, and leading-edge genes across cohorts."
 )
 
