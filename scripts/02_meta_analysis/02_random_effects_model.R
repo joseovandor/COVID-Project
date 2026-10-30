@@ -1,51 +1,18 @@
-# =============================================================================
-# 02_random_effects_meta_analysis.R
+# Random-effects meta-analysis of every gene present in >= 2 cohorts
 #
-# Random-effects meta-analysis of cohort-level differential-expression results
+# REML estimate of tau^2, Wald z test, inverse-variance weights (metafor::rma).
+# BH-FDR is computed across all eligible genes; the k = 2 and k = 3 tables are
+# subsets of that analysis. A fixed-effect model is fitted for comparison, and
+# tau^2, I^2 and Cochran's Q are reported for every gene.
 #
-# Input
-#   results/meta_analysis/harmonization/meta_input_combined_long.csv
-#
-# Datasets
-#   - GSE172274
-#   - GSE179277
-#   - GSE231409
-#
-# Primary model
-#   - Random-effects meta-analysis
-#   - REML estimator for between-study variance (tau^2)
-#   - Effect measure: unshrunken DESeq2 log2FoldChange
-#   - Standard error: DESeq2 lfcSE
-#   - Positive pooled effect = higher expression in Pediatric samples
-#
-# Sensitivity model
-#   - Fixed-effect inverse-variance model
-#
-# Multiple testing
-#   - Benjamini-Hochberg FDR calculated across all genes with k >= 2
-#   - Separate k=3 and k=2 tables are exported for reporting, but the primary
-#     FDR is not recalculated within those subsets.
-#
-# Heterogeneity
-#   - tau^2
-#   - I^2
-#   - Cochran's Q
-#   - Q-test p-value
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project. Paths are resolved
-#   with here::here(); no machine-specific working directory is required.
-#
-# The script is intentionally linear and does not define custom functions.
-# =============================================================================
+# Input : results/meta_analysis/harmonization/meta_input_combined_long.csv
+# Output: results/meta_analysis/primary/
 
 SCRIPT_BUILD <- "META_REM_2026-08-17_v1"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "metafor",
@@ -72,9 +39,7 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
 ALPHA <- 0.05
 
@@ -123,15 +88,13 @@ message("Input file: ", input_file)
 message("Primary meta-analysis directory: ", primary_dir)
 
 
-# =============================================================================
-# 02. Validate harmonized input
-# =============================================================================
+# 02. Validate harmonized input ----
 
 if (!file.exists(input_file)) {
   stop(
     "Harmonized meta-analysis input not found:\n",
     input_file,
-    "\nRun 01_harmonize_meta_inputs.R first."
+    "\nRun 01_harmonize_cohorts.R first."
   )
 }
 
@@ -192,9 +155,7 @@ if (anyDuplicated(meta_long[, c("SYMBOL", "Dataset")]) > 0) {
 }
 
 
-# =============================================================================
-# 03. Gene coverage
-# =============================================================================
+# 03. Gene coverage ----
 
 gene_coverage <- meta_long %>%
   distinct(
@@ -252,9 +213,7 @@ if (length(genes_for_meta) == 0) {
 }
 
 
-# =============================================================================
-# 04. Preallocate result table
-# =============================================================================
+# 04. Preallocate result table ----
 
 meta_results <- data.frame(
   SYMBOL = genes_for_meta,
@@ -296,9 +255,7 @@ meta_results <- data.frame(
 )
 
 
-# =============================================================================
-# 05. Gene-by-gene random-effects meta-analysis
-# =============================================================================
+# 05. Gene-by-gene random-effects meta-analysis ----
 
 for (i in seq_along(genes_for_meta)) {
 
@@ -317,9 +274,7 @@ for (i in seq_along(genes_for_meta)) {
   meta_results$k[i] <- k_gene
 
 
-  # ---------------------------------------------------------------------------
-  # Store cohort-level estimates
-  # ---------------------------------------------------------------------------
+  # Store cohort-level estimates ----
 
   row_172274 <- gene_data[
     gene_data$Dataset == "GSE172274",
@@ -355,9 +310,7 @@ for (i in seq_along(genes_for_meta)) {
   }
 
 
-  # ---------------------------------------------------------------------------
-  # Direction pattern
-  # ---------------------------------------------------------------------------
+  # Direction pattern ----
 
   direction_172274 <- ifelse(
     is.na(meta_results$GSE172274_log2FC[i]),
@@ -435,9 +388,7 @@ for (i in seq_along(genes_for_meta)) {
   }
 
 
-  # ---------------------------------------------------------------------------
-  # Random-effects model, REML
-  # ---------------------------------------------------------------------------
+  # Random-effects model, REML ----
 
   fit_re <- tryCatch(
     metafor::rma(
@@ -450,9 +401,7 @@ for (i in seq_along(genes_for_meta)) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # Fixed-effect sensitivity model
-  # ---------------------------------------------------------------------------
+  # Fixed-effect sensitivity model ----
 
   fit_fe <- tryCatch(
     metafor::rma(
@@ -465,9 +414,7 @@ for (i in seq_along(genes_for_meta)) {
   )
 
 
-  # ---------------------------------------------------------------------------
-  # Save random-effects model outputs
-  # ---------------------------------------------------------------------------
+  # Save random-effects model outputs ----
 
   if (!is.null(fit_re)) {
 
@@ -517,9 +464,7 @@ for (i in seq_along(genes_for_meta)) {
   }
 
 
-  # ---------------------------------------------------------------------------
-  # Save fixed-effect model outputs
-  # ---------------------------------------------------------------------------
+  # Save fixed-effect model outputs ----
 
   if (!is.null(fit_fe)) {
 
@@ -564,9 +509,7 @@ for (i in seq_along(genes_for_meta)) {
 }
 
 
-# =============================================================================
-# 06. Remove failed meta-analysis fits
-# =============================================================================
+# 06. Remove failed meta-analysis fits ----
 
 failed_re <- meta_results %>%
   filter(
@@ -595,9 +538,7 @@ if (nrow(meta_results_valid) == 0) {
 }
 
 
-# =============================================================================
-# 07. Multiple-testing correction
-# =============================================================================
+# 07. Multiple-testing correction ----
 
 # Primary FDR is calculated once across the complete universe of genes that
 # produced a valid meta-analysis result with k >= 2.
@@ -613,9 +554,7 @@ meta_results_valid$FE_FDR <- p.adjust(
 )
 
 
-# =============================================================================
-# 08. Derived interpretation fields
-# =============================================================================
+# 08. Derived interpretation fields ----
 
 meta_results_valid <- meta_results_valid %>%
   mutate(
@@ -656,9 +595,7 @@ meta_results_valid <- meta_results_valid %>%
   )
 
 
-# =============================================================================
-# 09. Export complete primary meta-analysis table
-# =============================================================================
+# 09. Export complete primary meta-analysis table ----
 
 write.csv(
   meta_results_valid,
@@ -670,9 +607,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 10. Export genes represented in all three datasets
-# =============================================================================
+# 10. Export genes represented in all three datasets ----
 
 meta_results_k3 <- meta_results_valid %>%
   filter(
@@ -693,9 +628,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 11. Export genes represented in exactly two datasets
-# =============================================================================
+# 11. Export genes represented in exactly two datasets ----
 
 meta_results_k2 <- meta_results_valid %>%
   filter(
@@ -716,9 +649,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 12. Export significant random-effects results
-# =============================================================================
+# 12. Export significant random-effects results ----
 
 meta_significant <- meta_results_valid %>%
   filter(
@@ -739,9 +670,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 13. Export significant results with direction consistency
-# =============================================================================
+# 13. Export significant results with direction consistency ----
 
 meta_significant_consistent <- meta_results_valid %>%
   filter(
@@ -763,9 +692,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 14. Export significant k=3 results
-# =============================================================================
+# 14. Export significant k=3 results ----
 
 meta_significant_k3 <- meta_results_valid %>%
   filter(
@@ -787,9 +714,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 15. Export heterogeneity-focused tables
-# =============================================================================
+# 15. Export heterogeneity-focused tables ----
 
 meta_high_heterogeneity <- meta_results_valid %>%
   filter(
@@ -833,9 +758,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 16. Random-effects vs fixed-effect comparison summary
-# =============================================================================
+# 16. Random-effects vs fixed-effect comparison summary ----
 
 re_fe_comparison_summary <- data.frame(
   Metric = c(
@@ -899,9 +822,7 @@ write.csv(
 print(re_fe_comparison_summary)
 
 
-# =============================================================================
-# 17. Heterogeneity summary
-# =============================================================================
+# 17. Heterogeneity summary ----
 
 heterogeneity_summary <- data.frame(
   Metric = c(
@@ -962,9 +883,7 @@ write.csv(
 print(heterogeneity_summary)
 
 
-# =============================================================================
-# 18. Direction-pattern summary
-# =============================================================================
+# 18. Direction-pattern summary ----
 
 direction_pattern_summary <- meta_results_valid %>%
   count(
@@ -988,9 +907,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 19. Top results table
-# =============================================================================
+# 19. Top results table ----
 
 top_results <- meta_results_valid %>%
   dplyr::select(
@@ -1036,9 +953,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 20. Primary meta-analysis summary
-# =============================================================================
+# 20. Primary meta-analysis summary ----
 
 n_valid <- nrow(
   meta_results_valid
@@ -1165,9 +1080,7 @@ cat(
 )
 
 
-# =============================================================================
-# 21. Reproducibility
-# =============================================================================
+# 21. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -1217,9 +1130,7 @@ writeLines(
 )
 
 
-# =============================================================================
-# 22. Final message
-# =============================================================================
+# 22. Final message ----
 
 message("")
 message("============================================================")

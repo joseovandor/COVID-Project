@@ -1,41 +1,18 @@
-# =============================================================================
-# 01_harmonize_meta_inputs.R
+# Harmonize the cohort-level DESeq2 results for the meta-analysis
 #
-# Harmonization of cohort-level differential-expression inputs for meta-analysis
+# Checks that the three cohorts use the same contrast (pediatric vs adult,
+# positive log2FC = higher in pediatric) and unshrunken log2FC / lfcSE, audits
+# the gene identifiers and merges the cohorts by gene symbol. No significance,
+# direction or effect-size filter is applied here.
 #
-# Datasets
-#   - GSE172274
-#   - GSE179277
-#   - GSE231409
-#
-# Purpose
-#   This script imports the cohort-level DESeq2 outputs prepared specifically
-#   for meta-analysis, validates their structure, confirms effect-direction
-#   conventions, audits gene identifiers, and creates harmonized long- and
-#   wide-format tables for downstream random-effects meta-analysis.
-#
-# Important conventions
-#   - All cohort-level effects must represent Pediatric vs Adult.
-#   - Positive log2FoldChange = higher expression in Pediatric samples.
-#   - Inputs must contain UNSHRUNKEN DESeq2 log2FoldChange and lfcSE.
-#   - No p-value, FDR, direction, or effect-size threshold is applied here.
-#   - Gene harmonization is performed by SYMBOL because the source datasets use
-#     different primary identifiers (ENTREZID or ENSEMBL).
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project. Paths are resolved
-#   with here::here(); no machine-specific working directory is required.
-#
-# The script is intentionally linear and does not define custom functions.
-# =============================================================================
+# Input : results/deseq2/<cohort>/primary/<cohort>_meta_input.csv
+# Output: results/meta_analysis/harmonization/
 
 SCRIPT_BUILD <- "META_HARMONIZATION_2026-08-17_v1"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "tidyverse",
@@ -60,9 +37,7 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
 dataset_ids <- c(
   "GSE172274",
@@ -146,9 +121,7 @@ message("Project root: ", project_root)
 message("Harmonization directory: ", harmonization_dir)
 
 
-# =============================================================================
-# 02. Validate input files
-# =============================================================================
+# 02. Validate input files ----
 
 missing_input_files <- input_files[
   !file.exists(input_files)
@@ -171,9 +144,7 @@ if (length(missing_input_files) > 0) {
 message("All three cohort-level meta-analysis inputs were found.")
 
 
-# =============================================================================
-# 03. Read GSE172274 meta-analysis input
-# =============================================================================
+# 03. Read GSE172274 meta-analysis input ----
 
 meta_GSE172274 <- read.csv(
   input_files["GSE172274"],
@@ -207,9 +178,7 @@ if (
 meta_GSE172274$Dataset <- "GSE172274"
 
 
-# =============================================================================
-# 04. Read GSE179277 meta-analysis input
-# =============================================================================
+# 04. Read GSE179277 meta-analysis input ----
 
 meta_GSE179277 <- read.csv(
   input_files["GSE179277"],
@@ -243,9 +212,7 @@ if (
 meta_GSE179277$Dataset <- "GSE179277"
 
 
-# =============================================================================
-# 05. Read GSE231409 meta-analysis input
-# =============================================================================
+# 05. Read GSE231409 meta-analysis input ----
 
 meta_GSE231409 <- read.csv(
   input_files["GSE231409"],
@@ -279,9 +246,7 @@ if (
 meta_GSE231409$Dataset <- "GSE231409"
 
 
-# =============================================================================
-# 06. Standardize column types
-# =============================================================================
+# 06. Standardize column types ----
 
 meta_GSE172274 <- meta_GSE172274 %>%
   mutate(
@@ -326,9 +291,7 @@ meta_GSE231409 <- meta_GSE231409 %>%
   )
 
 
-# =============================================================================
-# 07. Cohort-level validation
-# =============================================================================
+# 07. Cohort-level validation ----
 
 # No missing SYMBOLs should remain in the meta_input files.
 if (any(is.na(meta_GSE172274$SYMBOL) | meta_GSE172274$SYMBOL == "")) {
@@ -414,9 +377,7 @@ if (any(invalid_effect_GSE231409)) {
 }
 
 
-# =============================================================================
-# 08. Export per-cohort validation summary
-# =============================================================================
+# 08. Export per-cohort validation summary ----
 
 cohort_validation_summary <- data.frame(
   Dataset = dataset_ids,
@@ -460,9 +421,7 @@ write.csv(
 print(cohort_validation_summary)
 
 
-# =============================================================================
-# 09. Combine datasets in long format
-# =============================================================================
+# 09. Combine datasets in long format ----
 
 meta_long <- bind_rows(
   meta_GSE172274,
@@ -484,9 +443,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 10. Gene coverage across datasets
-# =============================================================================
+# 10. Gene coverage across datasets ----
 
 gene_coverage <- meta_long %>%
   distinct(
@@ -532,9 +489,7 @@ write.csv(
 print(coverage_distribution)
 
 
-# =============================================================================
-# 11. Identify genes present in all three datasets
-# =============================================================================
+# 11. Identify genes present in all three datasets ----
 
 genes_k3 <- gene_coverage %>%
   filter(
@@ -563,9 +518,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 12. Identify genes present in exactly two datasets
-# =============================================================================
+# 12. Identify genes present in exactly two datasets ----
 
 genes_k2 <- gene_coverage %>%
   filter(
@@ -594,9 +547,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 13. Identify genes unique to one dataset
-# =============================================================================
+# 13. Identify genes unique to one dataset ----
 
 genes_k1 <- gene_coverage %>%
   filter(
@@ -625,9 +576,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 14. Create harmonized wide table
-# =============================================================================
+# 14. Create harmonized wide table ----
 
 meta_wide <- meta_long %>%
   dplyr::select(
@@ -669,9 +618,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 15. Direction-of-effect audit
-# =============================================================================
+# 15. Direction-of-effect audit ----
 
 direction_audit <- meta_wide %>%
   mutate(
@@ -735,9 +682,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 16. Shared-gene direction consistency summary
-# =============================================================================
+# 16. Shared-gene direction consistency summary ----
 
 direction_summary_k3 <- direction_audit %>%
   filter(
@@ -770,9 +715,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 17. Dataset pair overlap summary
-# =============================================================================
+# 17. Dataset pair overlap summary ----
 
 symbols_172274 <- unique(
   meta_GSE172274$SYMBOL
@@ -838,9 +781,7 @@ write.csv(
 print(pair_overlap_summary)
 
 
-# =============================================================================
-# 18. Final harmonization summary
-# =============================================================================
+# 18. Final harmonization summary ----
 
 n_total_unique_symbols <- length(
   unique(
@@ -953,9 +894,7 @@ cat(
 )
 
 
-# =============================================================================
-# 19. Reproducibility
-# =============================================================================
+# 19. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -997,9 +936,7 @@ writeLines(
 )
 
 
-# =============================================================================
-# 20. Final message
-# =============================================================================
+# 20. Final message ----
 
 message("")
 message("============================================================")

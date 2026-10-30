@@ -1,42 +1,18 @@
-# =============================================================================
-# 03_meta_analysis_robustness.R
+# Leave-one-cohort-out analysis and descriptive robustness classes
 #
-# Robustness analysis for the random-effects meta-analysis
+# For genes present in the three cohorts, the random-effects model is refitted
+# leaving out each cohort in turn. Direction consistency, heterogeneity and
+# leave-one-out stability are summarised as Robust / Supported / Heterogeneous.
+# These classes are descriptive; the FDR from 02_random_effects_model.R is not
+# recalculated.
 #
-# Input
-#   results/meta_analysis/primary/meta_analysis_REM_all_genes.csv
-#   results/meta_analysis/harmonization/meta_input_combined_long.csv
-#
-# Purpose
-#   This script evaluates whether statistically significant pooled effects are
-#   supported consistently across studies or are driven by one cohort.
-#
-# Robustness components
-#   1. Direction-of-effect consistency across available datasets
-#   2. Leave-one-dataset-out sensitivity for genes represented in all 3 studies
-#   3. Stability of pooled effect direction and nominal significance
-#   4. Heterogeneity-aware descriptive classification
-#
-# Important
-#   - Primary statistical significance remains RE_FDR < 0.05 from script 02.
-#   - This script does NOT recalculate the primary FDR.
-#   - Robustness labels are descriptive summaries, not replacement significance
-#     criteria.
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project. Paths are resolved
-#   with here::here(); no machine-specific working directory is required.
-#
-# The script is intentionally linear and does not define custom functions.
-# =============================================================================
+# Output: results/meta_analysis/sensitivity/
 
 SCRIPT_BUILD <- "META_ROBUSTNESS_2026-08-17_v1"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "metafor",
@@ -63,9 +39,7 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
 ALPHA <- 0.05
 HIGH_I2 <- 75
@@ -117,15 +91,13 @@ message("Project root: ", project_root)
 message("Robustness directory: ", sensitivity_dir)
 
 
-# =============================================================================
-# 02. Validate inputs
-# =============================================================================
+# 02. Validate inputs ----
 
 if (!file.exists(meta_results_file)) {
   stop(
     "Primary meta-analysis results not found:\n",
     meta_results_file,
-    "\nRun 02_random_effects_meta_analysis.R first."
+    "\nRun 02_random_effects_model.R first."
   )
 }
 
@@ -133,7 +105,7 @@ if (!file.exists(meta_long_file)) {
   stop(
     "Harmonized long-format meta input not found:\n",
     meta_long_file,
-    "\nRun 01_harmonize_meta_inputs.R first."
+    "\nRun 01_harmonize_cohorts.R first."
   )
 }
 
@@ -222,9 +194,7 @@ meta_long <- meta_long %>%
   )
 
 
-# =============================================================================
-# 03. Significant genes from the primary random-effects model
-# =============================================================================
+# 03. Significant genes from the primary random-effects model ----
 
 significant_genes <- meta_results %>%
   filter(
@@ -245,9 +215,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 04. Direction-consistency summary
-# =============================================================================
+# 04. Direction-consistency summary ----
 
 direction_consistency_summary <- meta_results %>%
   mutate(
@@ -297,9 +265,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 05. Prepare k=3 genes for leave-one-dataset-out analysis
-# =============================================================================
+# 05. Prepare k=3 genes for leave-one-dataset-out analysis ----
 
 genes_k3 <- meta_results %>%
   filter(
@@ -321,9 +287,7 @@ if (length(genes_k3) == 0) {
 }
 
 
-# =============================================================================
-# 06. Preallocate leave-one-out result table
-# =============================================================================
+# 06. Preallocate leave-one-out result table ----
 
 leave_one_out <- data.frame(
   SYMBOL = character(),
@@ -350,9 +314,7 @@ leave_one_out <- data.frame(
 )
 
 
-# =============================================================================
-# 07. Leave one dataset out: omit GSE172274
-# =============================================================================
+# 07. Leave one dataset out: omit GSE172274 ----
 
 for (current_gene in genes_k3) {
 
@@ -420,9 +382,7 @@ for (current_gene in genes_k3) {
 }
 
 
-# =============================================================================
-# 08. Leave one dataset out: omit GSE179277
-# =============================================================================
+# 08. Leave one dataset out: omit GSE179277 ----
 
 for (current_gene in genes_k3) {
 
@@ -490,9 +450,7 @@ for (current_gene in genes_k3) {
 }
 
 
-# =============================================================================
-# 09. Leave one dataset out: omit GSE231409
-# =============================================================================
+# 09. Leave one dataset out: omit GSE231409 ----
 
 for (current_gene in genes_k3) {
 
@@ -569,9 +527,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 10. Summarize leave-one-out behavior by gene
-# =============================================================================
+# 10. Summarize leave-one-out behavior by gene ----
 
 if (nrow(leave_one_out) > 0) {
 
@@ -636,9 +592,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 11. Merge robustness information with primary results
-# =============================================================================
+# 11. Merge robustness information with primary results ----
 
 robustness_table <- meta_results %>%
   left_join(
@@ -647,9 +601,7 @@ robustness_table <- meta_results %>%
   )
 
 
-# =============================================================================
-# 12. Define descriptive robustness flags
-# =============================================================================
+# 12. Define descriptive robustness flags ----
 
 robustness_table <- robustness_table %>%
   mutate(
@@ -693,9 +645,7 @@ robustness_table <- robustness_table %>%
   )
 
 
-# =============================================================================
-# 13. Descriptive robustness classification
-# =============================================================================
+# 13. Descriptive robustness classification ----
 
 robustness_table <- robustness_table %>%
   mutate(
@@ -739,9 +689,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 14. Export significant genes by robustness class
-# =============================================================================
+# 14. Export significant genes by robustness class ----
 
 significant_robust <- robustness_table %>%
   filter(
@@ -801,9 +749,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 15. Dataset influence summary
-# =============================================================================
+# 15. Dataset influence summary ----
 
 if (nrow(leave_one_out) > 0) {
 
@@ -865,9 +811,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 16. Robustness-class summary
-# =============================================================================
+# 16. Robustness-class summary ----
 
 robustness_class_summary <- robustness_table %>%
   count(
@@ -890,9 +834,7 @@ write.csv(
 print(robustness_class_summary)
 
 
-# =============================================================================
-# 17. Significant-only robustness summary
-# =============================================================================
+# 17. Significant-only robustness summary ----
 
 significant_robustness_summary <- robustness_table %>%
   filter(
@@ -920,9 +862,7 @@ write.csv(
 print(significant_robustness_summary)
 
 
-# =============================================================================
-# 18. Primary-significant k=3 leave-one-out table
-# =============================================================================
+# 18. Primary-significant k=3 leave-one-out table ----
 
 significant_k3_symbols <- meta_results %>%
   filter(
@@ -952,9 +892,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 19. Robustness summary text
-# =============================================================================
+# 19. Robustness summary text ----
 
 n_primary_significant <- sum(
   robustness_table$PrimarySignificant,
@@ -1019,7 +957,7 @@ robustness_summary <- c(
   ),
   "",
   "Primary statistical significance:",
-  "  RE_FDR < 0.05 from 02_random_effects_meta_analysis.R",
+  "  RE_FDR < 0.05 from 02_random_effects_model.R",
   "  Primary FDR is not recalculated in this script.",
   "",
   "Robustness dimensions evaluated:",
@@ -1089,9 +1027,7 @@ cat(
 )
 
 
-# =============================================================================
-# 20. Reproducibility
-# =============================================================================
+# 20. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -1141,9 +1077,7 @@ writeLines(
 )
 
 
-# =============================================================================
-# 21. Final message
-# =============================================================================
+# 21. Final message ----
 
 message("")
 message("============================================================")

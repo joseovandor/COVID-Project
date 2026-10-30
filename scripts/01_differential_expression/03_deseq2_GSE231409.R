@@ -1,48 +1,17 @@
-# =============================================================================
-# 02_GSE179277_deseq2.R
+# Differential expression in GSE231409 (Hurst et al., 2025)
 #
-# Differential expression analysis of GSE179277
+# SARS-CoV-2-positive nasal/nasopharyngeal swabs, pediatric (< 18 y) vs adult
+# (>= 18 y). DESeq2 design ~ Batch + Sex + Group (reference: Adult); same
+# low-count filter and sensitivity models as the other cohorts.
 #
-# This script reproduces the cohort-level RNA-seq analysis used for the
-# cross-cohort comparison of pediatric and adult SARS-CoV-2-positive samples.
-#
-# Primary analysis
-#   - Pediatric and Adult groups are retained as defined by the original study
-#     sample labels ("Peds" and "Adult").
-#   - Only SARS-CoV-2-positive samples are included.
-#   - DESeq2 design: ~ Sex + Group, when sex adjustment is estimable.
-#   - Contrast: Pediatric vs Adult.
-#   - Positive log2FoldChange: higher expression in Pediatric samples.
-#   - Low-count filter: raw count >= 10 in at least the size of the smaller
-#     age group.
-#
-# Sensitivity analyses
-#   - Age modeled as a continuous variable.
-#   - Alternative prevalence filter: CPM >= 1 in at least the size of the
-#     smaller age group.
-#   - Group-by-sex interaction, when estimable.
-#
-# Downstream outputs
-#   - Complete cohort-level DESeq2 results.
-#   - Unshrunken log2FC and SE for cross-cohort meta-analysis.
-#   - Genome-wide ranked statistics for pre-ranked GSEA.
-#   - Normalized-count and VST matrices.
-#   - QC, PCA, annotation, and sensitivity diagnostics.
-#
-# Repository use
-#   Run from the root of the COVID-Project RStudio Project. Paths are resolved
-#   with here::here(); no machine-specific working directory is required.
-#
-# The script is intentionally linear and does not define custom functions.
-# =============================================================================
+# Input : data/raw/GSE231409/
+# Output: results/deseq2/GSE231409/
 
-SCRIPT_BUILD <- "GSE179277_REPO_FINAL_2026-08-17_v3"
+SCRIPT_BUILD <- "GSE231409_DESEQ2_2026-10-26"
 message("Running script build: ", SCRIPT_BUILD)
 
 
-# =============================================================================
-# 00. Packages
-# =============================================================================
+# 00. Packages ----
 
 required_packages <- c(
   "GEOquery",
@@ -79,26 +48,21 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
-# 01. Configuration
-# =============================================================================
+# 01. Configuration ----
 
-dataset_id <- "GSE179277"
+dataset_id <- "GSE231409"
 
+AGE_CUTOFF <- 18
 MIN_COUNT <- 10
 MIN_CPM <- 1
 ALPHA <- 0.05
 
-raw_counts_filename <- paste0(
-  dataset_id,
-  "_all_adult_and_ped_samples_combined_counts_unfiltered.csv.gz"
-)
+raw_counts_filename <- "GSE231409_BRAVE_RNASeq_counts.csv.gz"
 
 raw_counts_url <- paste0(
-  "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE179nnn/",
-  "GSE179277/suppl/",
-  "GSE179277%5Fall%5Fadult%5Fand%5Fped%5Fsamples%5Fcombined%5Fcounts",
-  "%5Funfiltered%2Ecsv%2Egz"
+  "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE231nnn/",
+  "GSE231409/suppl/",
+  "GSE231409%5FBRAVE%5FRNASeq%5Fcounts%2Ecsv%2Egz"
 )
 
 project_root <- here::here()
@@ -126,9 +90,7 @@ message("Project root: ", project_root)
 message("Results directory: ", results_root)
 
 
-# =============================================================================
-# 02. Download GEO metadata
-# =============================================================================
+# 02. Download GEO metadata ----
 
 message("Downloading GEO metadata for ", dataset_id, "...")
 
@@ -163,9 +125,7 @@ write.csv(
 )
 
 
-# =============================================================================
-# 03. Inspect metadata columns
-# =============================================================================
+# 03. Inspect metadata columns ----
 
 metadata_columns <- colnames(metadata_raw)
 
@@ -180,9 +140,11 @@ writeLines(
 required_metadata_columns <- c(
   "geo_accession",
   "title",
-  "infection:ch1",
+  "covid:ch1",
   "age:ch1",
-  "gender:ch1"
+  "Sex:ch1",
+  "tissue:ch1",
+  "batch:ch1"
 )
 
 missing_metadata_columns <- setdiff(
@@ -203,20 +165,22 @@ if (length(missing_metadata_columns) > 0) {
 }
 
 
-# =============================================================================
-# 04. Curate metadata
-# =============================================================================
+# 04. Curate metadata ----
 
 sample_metadata <- data.frame(
   GEO_ID = as.character(metadata_raw$geo_accession),
-  SampleTitle = as.character(metadata_raw$title),
-  InfectionRaw = as.character(metadata_raw[["infection:ch1"]]),
+  Sample = as.character(metadata_raw$title),
+  CovidRaw = as.character(metadata_raw[["covid:ch1"]]),
   Age = suppressWarnings(as.numeric(metadata_raw[["age:ch1"]])),
-  Sex = as.character(metadata_raw[["gender:ch1"]]),
+  Sex = as.character(metadata_raw[["Sex:ch1"]]),
+  Tissue = as.character(metadata_raw[["tissue:ch1"]]),
+  Batch = as.character(metadata_raw[["batch:ch1"]]),
   stringsAsFactors = FALSE
 )
 
 sample_metadata$Sex <- trimws(sample_metadata$Sex)
+sample_metadata$Tissue <- trimws(sample_metadata$Tissue)
+sample_metadata$Batch <- trimws(sample_metadata$Batch)
 
 sample_metadata$Sex <- ifelse(
   tolower(sample_metadata$Sex) %in% c("male", "m"),
@@ -230,15 +194,15 @@ sample_metadata$Sex <- ifelse(
 
 sample_metadata$InfectionStatus <- ifelse(
   grepl(
-    "SC2",
-    sample_metadata$InfectionRaw,
+    "Positive",
+    sample_metadata$CovidRaw,
     ignore.case = TRUE
   ),
   "SC2_Pos",
   ifelse(
     grepl(
-      "no_virus",
-      sample_metadata$InfectionRaw,
+      "Negative",
+      sample_metadata$CovidRaw,
       ignore.case = TRUE
     ),
     "SC2_Neg",
@@ -246,38 +210,20 @@ sample_metadata$InfectionStatus <- ifelse(
   )
 )
 
-# Preserve the original study age-group classification encoded in sample titles.
 sample_metadata$Group <- ifelse(
-  grepl(
-    "_Peds$",
-    sample_metadata$SampleTitle,
-    ignore.case = TRUE
-  ),
+  !is.na(sample_metadata$Age) &
+    sample_metadata$Age < AGE_CUTOFF,
   "Pediatric",
   ifelse(
-    grepl(
-      "_Adult$",
-      sample_metadata$SampleTitle,
-      ignore.case = TRUE
-    ),
+    !is.na(sample_metadata$Age) &
+      sample_metadata$Age >= AGE_CUTOFF,
     "Adult",
     NA
   )
 )
 
-# Count-matrix column names use the sample identifier without the terminal
-# "_Peds" or "_Adult" suffix.
-sample_metadata$Sample <- sub(
-  "_(Peds|Adult)$",
-  "",
-  sample_metadata$SampleTitle,
-  ignore.case = TRUE
-)
 
-
-# =============================================================================
-# 05. Document cohort labels
-# =============================================================================
+# 05. Document cohort labels ----
 
 infection_summary <- sample_metadata %>%
   count(
@@ -285,9 +231,15 @@ infection_summary <- sample_metadata %>%
     name = "N"
   )
 
-group_summary_all <- sample_metadata %>%
+tissue_summary <- sample_metadata %>%
   count(
-    Group,
+    Tissue,
+    name = "N"
+  )
+
+batch_summary_all <- sample_metadata %>%
+  count(
+    Batch,
     name = "N"
   )
 
@@ -301,28 +253,76 @@ write.csv(
 )
 
 write.csv(
-  group_summary_all,
+  tissue_summary,
   file.path(
     metadata_dir,
-    paste0(dataset_id, "_group_summary_all_samples.csv")
+    paste0(dataset_id, "_tissue_summary.csv")
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  batch_summary_all,
+  file.path(
+    metadata_dir,
+    paste0(dataset_id, "_batch_summary_all_samples.csv")
   ),
   row.names = FALSE
 )
 
 print(infection_summary)
-print(group_summary_all)
+print(tissue_summary)
+print(batch_summary_all)
 
 
-# =============================================================================
-# 06. Restrict to SARS-CoV-2-positive Pediatric and Adult samples
-# =============================================================================
+# 06. Restrict cohort using the original analysis logic ----
+
+# The cohort is defined exactly as in the original GSE231409 analysis:
+#   1. retain recognized SARS-CoV-2 status;
+#   2. retain Nasal swab / Nasopharyngeal swab samples;
+#   3. define Pediatric as age < 18 and Adult as age >= 18;
+#   4. retain SARS-CoV-2-positive Pediatric and Adult samples.
+#
+# Sex and Batch are NOT used to remove samples at this stage. They are retained
+# as model covariates and validated after the cohort has been defined.
+
+eligible_tissues <- c(
+  "Nasal swab",
+  "Nasopharyngeal swab"
+)
+
+sample_metadata_original_logic <- sample_metadata[
+  sample_metadata$InfectionStatus %in% c(
+    "SC2_Pos",
+    "SC2_Neg"
+  ),
+  ,
+  drop = FALSE
+]
+
+sample_metadata_original_logic <- sample_metadata_original_logic[
+  sample_metadata_original_logic$Tissue %in% eligible_tissues,
+  ,
+  drop = FALSE
+]
+
+sample_metadata_original_logic$CombinedStatus <- paste(
+  sample_metadata_original_logic$InfectionStatus,
+  sample_metadata_original_logic$Group,
+  sep = "_"
+)
+
+sample_metadata_primary <- sample_metadata_original_logic[
+  sample_metadata_original_logic$CombinedStatus %in% c(
+    "SC2_Pos_Pediatric",
+    "SC2_Pos_Adult"
+  ),
+  ,
+  drop = FALSE
+]
 
 excluded_metadata <- sample_metadata[
-  sample_metadata$InfectionStatus != "SC2_Pos" |
-    is.na(sample_metadata$InfectionStatus) |
-    is.na(sample_metadata$Group) |
-    is.na(sample_metadata$Age) |
-    is.na(sample_metadata$Sex),
+  !(sample_metadata$Sample %in% sample_metadata_primary$Sample),
   ,
   drop = FALSE
 ]
@@ -336,15 +336,6 @@ write.csv(
   row.names = FALSE
 )
 
-sample_metadata_primary <- sample_metadata[
-  sample_metadata$InfectionStatus == "SC2_Pos" &
-    !is.na(sample_metadata$Group) &
-    !is.na(sample_metadata$Age) &
-    !is.na(sample_metadata$Sex),
-  ,
-  drop = FALSE
-]
-
 sample_metadata_primary$Group <- factor(
   sample_metadata_primary$Group,
   levels = c(
@@ -357,16 +348,57 @@ sample_metadata_primary$Sex <- factor(
   sample_metadata_primary$Sex
 )
 
+sample_metadata_primary$Batch <- factor(
+  sample_metadata_primary$Batch
+)
+
 if (nrow(sample_metadata_primary) == 0) {
   stop(
-    "No SARS-CoV-2-positive Pediatric/Adult samples remained after metadata QC."
+    "No eligible SARS-CoV-2-positive nasal/nasopharyngeal samples remained after cohort selection."
+  )
+}
+
+# Sex and Batch are model covariates, not cohort-selection filters.
+# Do not silently remove samples for missing covariates. Instead, document and
+# stop if the selected cohort contains missing values because DESeq2 cannot fit
+# a design containing NA covariates.
+
+missing_covariates <- sample_metadata_primary[
+  is.na(sample_metadata_primary$Sex) |
+    is.na(sample_metadata_primary$Batch) |
+    sample_metadata_primary$Batch == "",
+  c(
+    "GEO_ID",
+    "Sample",
+    "Age",
+    "Sex",
+    "Batch",
+    "Group",
+    "Tissue",
+    "InfectionStatus"
+  ),
+  drop = FALSE
+]
+
+write.csv(
+  missing_covariates,
+  file.path(
+    diagnostics_dir,
+    paste0(dataset_id, "_missing_model_covariates.csv")
+  ),
+  row.names = FALSE
+)
+
+if (nrow(missing_covariates) > 0) {
+  stop(
+    "The cohort defined by the original selection logic contains samples with ",
+    "missing Sex and/or Batch values. No samples were removed automatically. ",
+    "Inspect GSE231409_missing_model_covariates.csv before fitting DESeq2."
   )
 }
 
 
-# =============================================================================
-# 07. Download raw counts if absent
-# =============================================================================
+# 07. Download raw counts if absent ----
 
 counts_file <- file.path(
   data_dir,
@@ -418,57 +450,37 @@ if (!file.exists(counts_file)) {
 }
 
 
-# =============================================================================
-# 08. Load raw count matrix
-# =============================================================================
-
-# Read the GEO combined count matrix using the same behavior as the original
-# analysis. The first column contains ENSEMBL identifiers and the second column
-# contains gene names.
+# 08. Load raw count matrix ----
 
 raw_counts <- read.csv(
   counts_file,
-  stringsAsFactors = FALSE
+  stringsAsFactors = FALSE,
+  check.names = FALSE
 )
 
-# Save imported column names for reproducibility.
 writeLines(
   colnames(raw_counts),
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_raw_count_columns.txt"
-    )
+    paste0(dataset_id, "_raw_count_columns.txt")
   )
 )
 
-
-# ---------------------------------------------------------------------------
-# Identify the ENSEMBL identifier column
-# ---------------------------------------------------------------------------
-
-# In the original analysis, the unnamed first CSV column was imported by
-# read.csv() as "X". If that name is not present, use the first column.
-
-if ("X" %in% colnames(raw_counts)) {
+# The original analysis uses target_id as the gene identifier.
+if ("target_id" %in% colnames(raw_counts)) {
   
-  gene_id_column <- "X"
+  gene_id_column <- "target_id"
   
 } else {
   
   gene_id_column <- colnames(raw_counts)[1]
   
-  message(
-    "Column 'X' was not found. Using first column as ENSEMBL ID: ",
+  warning(
+    "Expected identifier column 'target_id' was not found. ",
+    "Using the first column as the gene identifier: ",
     gene_id_column
   )
 }
-
-
-# ---------------------------------------------------------------------------
-# Set ENSEMBL identifiers as row names
-# ---------------------------------------------------------------------------
 
 raw_counts[[gene_id_column]] <- as.character(
   raw_counts[[gene_id_column]]
@@ -488,36 +500,17 @@ if (anyDuplicated(raw_counts[[gene_id_column]]) > 0) {
     duplicated_gene_ids,
     file.path(
       diagnostics_dir,
-      paste0(
-        dataset_id,
-        "_duplicated_raw_ENSEMBL.txt"
-      )
+      paste0(dataset_id, "_duplicated_raw_gene_ids.txt")
     )
   )
   
   stop(
-    "Duplicated ENSEMBL identifiers were found in the raw count matrix."
+    "Duplicated gene identifiers were found in the raw count matrix."
   )
 }
 
 rownames(raw_counts) <- raw_counts[[gene_id_column]]
-
 raw_counts[[gene_id_column]] <- NULL
-
-
-# ---------------------------------------------------------------------------
-# Remove the gene-name annotation column
-# ---------------------------------------------------------------------------
-
-if ("gene_name" %in% colnames(raw_counts)) {
-  
-  raw_counts$gene_name <- NULL
-}
-
-
-# ---------------------------------------------------------------------------
-# Convert to numeric count matrix
-# ---------------------------------------------------------------------------
 
 counts_matrix <- as.matrix(
   raw_counts
@@ -525,20 +518,13 @@ counts_matrix <- as.matrix(
 
 storage.mode(counts_matrix) <- "numeric"
 
-
-# ---------------------------------------------------------------------------
-# Validate count matrix
-# ---------------------------------------------------------------------------
-
 if (any(is.na(counts_matrix))) {
-  
   stop(
     "NA values were detected in the raw count matrix."
   )
 }
 
 if (any(counts_matrix < 0)) {
-  
   stop(
     "Negative values were detected in the raw count matrix."
   )
@@ -552,7 +538,6 @@ if (
     ) > 1e-8
   )
 ) {
-  
   stop(
     "Non-integer values were detected. ",
     "DESeq2 requires raw integer gene-level counts."
@@ -563,11 +548,6 @@ counts_matrix <- round(
   counts_matrix
 )
 
-
-# ---------------------------------------------------------------------------
-# Report matrix dimensions
-# ---------------------------------------------------------------------------
-
 message(
   "Raw count matrix loaded successfully: ",
   nrow(counts_matrix),
@@ -577,9 +557,7 @@ message(
 )
 
 
-# =============================================================================
-# 09. Match metadata and counts
-# =============================================================================
+# 09. Match metadata and counts ----
 
 samples_in_both <- intersect(
   sample_metadata_primary$Sample,
@@ -600,10 +578,7 @@ writeLines(
   missing_from_counts,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_samples_missing_from_counts.txt"
-    )
+    paste0(dataset_id, "_samples_missing_from_counts.txt")
   )
 )
 
@@ -611,10 +586,7 @@ writeLines(
   count_columns_not_used,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_count_columns_not_used.txt"
-    )
+    paste0(dataset_id, "_count_columns_not_used.txt")
   )
 )
 
@@ -655,9 +627,7 @@ stopifnot(
 )
 
 
-# =============================================================================
-# 10. Cohort composition
-# =============================================================================
+# 10. Cohort composition and batch structure ----
 
 cohort_summary <- sample_metadata_primary %>%
   count(
@@ -679,14 +649,19 @@ age_summary <- sample_metadata_primary %>%
     .groups = "drop"
   )
 
+batch_summary <- sample_metadata_primary %>%
+  count(
+    Batch,
+    Group,
+    Sex,
+    name = "N"
+  )
+
 write.csv(
   sample_metadata_primary,
   file.path(
     metadata_dir,
-    paste0(
-      dataset_id,
-      "_sample_metadata.csv"
-    )
+    paste0(dataset_id, "_sample_metadata.csv")
   ),
   row.names = FALSE
 )
@@ -695,10 +670,7 @@ write.csv(
   cohort_summary,
   file.path(
     metadata_dir,
-    paste0(
-      dataset_id,
-      "_cohort_summary.csv"
-    )
+    paste0(dataset_id, "_cohort_summary.csv")
   ),
   row.names = FALSE
 )
@@ -707,37 +679,52 @@ write.csv(
   age_summary,
   file.path(
     metadata_dir,
-    paste0(
-      dataset_id,
-      "_age_summary.csv"
-    )
+    paste0(dataset_id, "_age_summary.csv")
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  batch_summary,
+  file.path(
+    metadata_dir,
+    paste0(dataset_id, "_batch_summary.csv")
   ),
   row.names = FALSE
 )
 
 print(cohort_summary)
 print(age_summary)
+print(batch_summary)
 
 group_sex_table <- table(
   sample_metadata_primary$Group,
   sample_metadata_primary$Sex
 )
 
+group_batch_table <- table(
+  sample_metadata_primary$Group,
+  sample_metadata_primary$Batch
+)
+
 capture.output(
   group_sex_table,
   file = file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_group_by_sex_table.txt"
-    )
+    paste0(dataset_id, "_group_by_sex_table.txt")
+  )
+)
+
+capture.output(
+  group_batch_table,
+  file = file.path(
+    diagnostics_dir,
+    paste0(dataset_id, "_group_by_batch_table.txt")
   )
 )
 
 
-# =============================================================================
-# 11. Primary low-count filtering
-# =============================================================================
+# 11. Primary low-count filtering ----
 
 group_sizes <- table(
   sample_metadata_primary$Group
@@ -764,9 +751,7 @@ counts_primary <- counts_matrix[
 ]
 
 
-# =============================================================================
-# 12. CPM-based sensitivity filter
-# =============================================================================
+# 12. CPM-based sensitivity filter ----
 
 cpm_matrix <- edgeR::cpm(
   counts_matrix
@@ -807,10 +792,7 @@ write.csv(
   filtering_summary,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_low_count_filtering_summary.csv"
-    )
+    paste0(dataset_id, "_low_count_filtering_summary.csv")
   ),
   row.names = FALSE
 )
@@ -818,9 +800,7 @@ write.csv(
 print(filtering_summary)
 
 
-# =============================================================================
-# 13. Determine whether sex adjustment is feasible
-# =============================================================================
+# 13. Determine primary design ----
 
 sex_adjustment_feasible <- (
   nlevels(
@@ -830,23 +810,99 @@ sex_adjustment_feasible <- (
   ) >= 2
 )
 
-if (sex_adjustment_feasible) {
+batch_adjustment_feasible <- (
+  nlevels(
+    droplevels(
+      sample_metadata_primary$Batch
+    )
+  ) >= 2
+)
+
+if (
+  batch_adjustment_feasible &&
+  sex_adjustment_feasible
+) {
+  
+  primary_design <- ~ Batch + Sex + Group
+  
+} else if (
+  batch_adjustment_feasible &&
+  !sex_adjustment_feasible
+) {
+  
+  primary_design <- ~ Batch + Group
+  
+  warning(
+    "Sex adjustment is not feasible. Primary model will use ~ Batch + Group."
+  )
+  
+} else if (
+  !batch_adjustment_feasible &&
+  sex_adjustment_feasible
+) {
   
   primary_design <- ~ Sex + Group
+  
+  warning(
+    "Batch adjustment is not feasible. Primary model will use ~ Sex + Group."
+  )
   
 } else {
   
   primary_design <- ~ Group
   
   warning(
-    "Sex adjustment is not feasible. Primary model will use ~ Group."
+    "Neither Batch nor Sex adjustment is feasible. Primary model will use ~ Group."
+  )
+}
+
+primary_design_matrix <- model.matrix(
+  primary_design,
+  data = sample_metadata_primary
+)
+
+primary_design_full_rank <- (
+  qr(primary_design_matrix)$rank ==
+    ncol(primary_design_matrix)
+)
+
+writeLines(
+  c(
+    paste(
+      "Primary design:",
+      paste(
+        deparse(primary_design),
+        collapse = ""
+      )
+    ),
+    paste(
+      "Design matrix rank:",
+      qr(primary_design_matrix)$rank
+    ),
+    paste(
+      "Design matrix columns:",
+      ncol(primary_design_matrix)
+    ),
+    paste(
+      "Full rank:",
+      primary_design_full_rank
+    )
+  ),
+  file.path(
+    diagnostics_dir,
+    paste0(dataset_id, "_design_rank_check.txt")
+  )
+)
+
+if (!primary_design_full_rank) {
+  stop(
+    "Primary DESeq2 design matrix is not full rank. ",
+    "Inspect Group x Batch and Group x Sex diagnostics before proceeding."
   )
 }
 
 
-# =============================================================================
-# 14. Primary DESeq2 model
-# =============================================================================
+# 14. Primary DESeq2 model ----
 
 dds_primary <- DESeqDataSetFromMatrix(
   countData = counts_primary,
@@ -864,6 +920,48 @@ print(
     dds_primary
   )
 )
+
+# Exact primary-model specification  ----
+# This is the model whose results feed BOTH the meta-analysis (unshrunken
+# log2FC/SE) and the pre-ranked GSEA (Wald statistic).
+
+model_specification <- data.frame(
+  Dataset = dataset_id,
+  Design = paste(deparse(design(dds_primary)), collapse = ""),
+  Contrast = "Group: Pediatric vs Adult (reference = Adult)",
+  Test = "Wald",
+  Age_group_rule = "Pediatric < 18 years; Adult >= 18 years",
+  N_Adult = sum(colData(dds_primary)$Group == "Adult"),
+  N_Pediatric = sum(colData(dds_primary)$Group == "Pediatric"),
+  N_Female = sum(colData(dds_primary)$Sex == "Female"),
+  N_Male = sum(colData(dds_primary)$Sex == "Male"),
+  N_Batch_levels = if ("Batch" %in% colnames(colData(dds_primary))) {
+    nlevels(droplevels(as.factor(colData(dds_primary)$Batch)))
+  } else {
+    NA
+  },
+  Low_count_rule = paste0(
+    "raw count >= 10 in >= ",
+    min_group_size,
+    " samples"
+  ),
+  N_genes_tested = nrow(dds_primary),
+  Coefficients = paste(resultsNames(dds_primary), collapse = "; "),
+  DESeq2_version = as.character(packageVersion("DESeq2")),
+  Script_build = SCRIPT_BUILD,
+  stringsAsFactors = FALSE
+)
+
+write.csv(
+  model_specification,
+  file.path(
+    results_root,
+    paste0(dataset_id, "_primary_model_specification.csv")
+  ),
+  row.names = FALSE
+)
+
+print(model_specification)
 
 res_primary <- results(
   dds_primary,
@@ -894,8 +992,6 @@ res_primary_df <- res_primary_df %>%
     ENSEMBL
   )
 
-# Preserve original ENSEMBL identifier and create a version-free identifier
-# exclusively for annotation.
 res_primary_df$ENSEMBL_BASE <- sub(
   "\\..*$",
   "",
@@ -903,9 +999,7 @@ res_primary_df$ENSEMBL_BASE <- sub(
 )
 
 
-# =============================================================================
-# 15. Annotation diagnostics
-# =============================================================================
+# 15. Annotation diagnostics ----
 
 annotation_list <- AnnotationDbi::mapIds(
   org.Hs.eg.db,
@@ -958,10 +1052,7 @@ write.csv(
   annotation_diagnostics,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_annotation_diagnostics.csv"
-    )
+    paste0(dataset_id, "_annotation_diagnostics.csv")
   ),
   row.names = FALSE
 )
@@ -1014,10 +1105,7 @@ write.csv(
   duplicate_symbols,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_duplicated_symbols.csv"
-    )
+    paste0(dataset_id, "_duplicated_symbols.csv")
   ),
   row.names = FALSE
 )
@@ -1034,29 +1122,19 @@ res_primary_annotated$MetaEligibleAnnotation <- (
 )
 
 
-# =============================================================================
-# 16. Export complete primary DESeq2 results
-# =============================================================================
+# 16. Export complete primary DESeq2 results ----
 
 write.csv(
   res_primary_annotated,
   file.path(
     primary_dir,
-    paste0(
-      dataset_id,
-      "_DESeq2_complete.csv"
-    )
+    paste0(dataset_id, "_DESeq2_complete.csv")
   ),
   row.names = FALSE
 )
 
 
-# =============================================================================
-# 17. Export meta-analysis input
-# =============================================================================
-
-# All technically eligible genes are retained; significance and effect
-# direction are evaluated downstream.
+# 17. Export meta-analysis input ----
 
 meta_input <- res_primary_annotated %>%
   filter(
@@ -1084,18 +1162,13 @@ write.csv(
   meta_input,
   file.path(
     primary_dir,
-    paste0(
-      dataset_id,
-      "_meta_input.csv"
-    )
+    paste0(dataset_id, "_meta_input.csv")
   ),
   row.names = FALSE
 )
 
 
-# =============================================================================
-# 18. Shrinkage for visualization and cohort-level reporting
-# =============================================================================
+# 18. Shrinkage for visualization and cohort-level reporting ----
 
 expected_coef <- "Group_Pediatric_vs_Adult"
 
@@ -1140,10 +1213,7 @@ if (
     res_shrunk_df,
     file.path(
       primary_dir,
-      paste0(
-        dataset_id,
-        "_DESeq2_shrunken.csv"
-      )
+      paste0(dataset_id, "_DESeq2_shrunken.csv")
     ),
     row.names = FALSE
   )
@@ -1157,9 +1227,7 @@ if (
 }
 
 
-# =============================================================================
-# 19. Normalized counts
-# =============================================================================
+# 19. Normalized counts ----
 
 normalized_counts <- counts(
   dds_primary,
@@ -1187,18 +1255,13 @@ write.csv(
   normalized_counts_df,
   file.path(
     primary_dir,
-    paste0(
-      dataset_id,
-      "_normalized_counts.csv"
-    )
+    paste0(dataset_id, "_normalized_counts.csv")
   ),
   row.names = FALSE
 )
 
 
-# =============================================================================
-# 20. Export matrices and ranked statistics for pathway analysis
-# =============================================================================
+# 20. Export matrices and ranked statistics for pathway analysis ----
 
 vsd_export <- vst(
   dds_primary,
@@ -1226,17 +1289,11 @@ write.csv(
   vst_matrix,
   file.path(
     primary_dir,
-    paste0(
-      dataset_id,
-      "_VST_matrix.csv"
-    )
+    paste0(dataset_id, "_VST_matrix.csv")
   ),
   row.names = FALSE
 )
 
-# The DESeq2 Wald statistic is used as the ranking metric. Genes are restricted
-# only to valid, unique SYMBOL mappings; no statistical-significance threshold
-# is applied.
 gsea_ranked <- res_primary_annotated %>%
   filter(
     MetaEligibleAnnotation,
@@ -1263,18 +1320,13 @@ write.csv(
   gsea_ranked,
   file.path(
     primary_dir,
-    paste0(
-      dataset_id,
-      "_GSEA_ranked_genes.csv"
-    )
+    paste0(dataset_id, "_GSEA_ranked_genes.csv")
   ),
   row.names = FALSE
 )
 
 
-# =============================================================================
-# 21. Size factors
-# =============================================================================
+# 21. Size factors ----
 
 size_factor_table <- data.frame(
   Sample = names(
@@ -1291,26 +1343,18 @@ write.csv(
   size_factor_table,
   file.path(
     primary_dir,
-    paste0(
-      dataset_id,
-      "_size_factors.csv"
-    )
+    paste0(dataset_id, "_size_factors.csv")
   ),
   row.names = FALSE
 )
 
 
-# =============================================================================
-# 22. Dispersion diagnostics
-# =============================================================================
+# 22. Dispersion diagnostics ----
 
 tiff(
   file.path(
     figures_dir,
-    paste0(
-      dataset_id,
-      "_dispersion_estimates.tiff"
-    )
+    paste0(dataset_id, "_dispersion_estimates.tiff")
   ),
   res = 600,
   width = 2500,
@@ -1340,9 +1384,7 @@ if (
 }
 
 
-# =============================================================================
-# 23. Independent filtering
-# =============================================================================
+# 23. Independent filtering ----
 
 res_metadata <- S4Vectors::metadata(
   res_primary
@@ -1363,9 +1405,7 @@ if (
 }
 
 
-# =============================================================================
-# 24. Cook's distance diagnostics
-# =============================================================================
+# 24. Cook's distance diagnostics ----
 
 cooks_matrix <- assays(
   dds_primary
@@ -1415,21 +1455,14 @@ if (
     cooks_diagnostics,
     file.path(
       diagnostics_dir,
-      paste0(
-        dataset_id,
-        "_cooks_distance.csv"
-      )
+      paste0(dataset_id, "_cooks_distance.csv")
     ),
     row.names = FALSE
   )
 }
 
 
-# =============================================================================
-# 25. PCA
-# =============================================================================
-
-# PCA styling and export settings are kept consistent across cohorts.
+# 25. PCA ----
 
 rld <- vst(
   dds_primary,
@@ -1454,7 +1487,7 @@ percentVar <- round(
 tiff(
   file.path(
     figures_dir,
-    "PCA_R_GSE179277_Mick_Langelier_Eng.tiff"
+    "PCA_R_GSE231409_Hurst_Kelly_Eng.tiff"
   ),
   res = 600,
   width = 3700,
@@ -1476,7 +1509,7 @@ ggplot(
     size = 3
   ) +
   ggtitle(
-    "GSE179277"
+    "GSE231409"
   ) +
   xlab(
     paste0(
@@ -1535,41 +1568,39 @@ ggplot(
 dev.off()
 
 
-# Quantitative assessment of age and sex associations with PC1 and PC2.
+# Quantitative assessment of age, sex, and batch associations with PC1/PC2.
 
-pca_scores <- as.data.frame(
-  pcaData
+# PC scores and sample metadata are combined by column position: plotPCA()
+# returns one row per column of the transformed object, in the same order as
+# colData(). This avoids depending on the identifier used as row names or on
+# the columns returned by plotPCA(), which differ between DESeq2 versions.
+if (nrow(pcaData) != ncol(rld)) {
+  stop("plotPCA() returned ", nrow(pcaData), " rows for ", ncol(rld), " samples.")
+}
+
+pca_metadata <- as.data.frame(
+  colData(rld)
 )
 
-pca_scores$Sample <- rownames(
-  pcaData
+pca_scores <- data.frame(
+  Sample = colnames(rld),
+  PC1 = pcaData$PC1,
+  PC2 = pcaData$PC2,
+  stringsAsFactors = FALSE
 )
 
-rownames(
-  pca_scores
-) <- NULL
-
-# plotPCA(returnData = TRUE) already contains Group. Join only additional
-# metadata to avoid creating Group.x / Group.y.
-pca_scores <- merge(
-  pca_scores,
-  sample_metadata_primary %>%
-    dplyr::select(
-      Sample,
-      Age,
-      Sex
-    ),
-  by = "Sample",
-  all.x = TRUE,
-  sort = FALSE
-)
+pca_scores$Group <- pca_metadata$Group
+pca_scores$Age <- pca_metadata$Age
+pca_scores$Sex <- pca_metadata$Sex
+pca_scores$Batch <- pca_metadata$Batch
 
 if (
   !all(
     c(
       "Group",
       "Age",
-      "Sex"
+      "Sex",
+      "Batch"
     ) %in%
     colnames(
       pca_scores
@@ -1577,7 +1608,7 @@ if (
   )
 ) {
   stop(
-    "PCA metadata merge failed: Group, Age, and Sex must be present."
+    "PCA metadata merge failed: Group, Age, Sex, and Batch must be present."
   )
 }
 
@@ -1585,15 +1616,41 @@ write.csv(
   pca_scores,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_PCA_scores.csv"
-    )
+    paste0(dataset_id, "_PCA_scores.csv")
   ),
   row.names = FALSE
 )
 
 if (
+  batch_adjustment_feasible &&
+  sex_adjustment_feasible
+) {
+  
+  pca_pc1_model <- lm(
+    PC1 ~ Age + Sex + Batch,
+    data = pca_scores
+  )
+  
+  pca_pc2_model <- lm(
+    PC2 ~ Age + Sex + Batch,
+    data = pca_scores
+  )
+  
+} else if (
+  batch_adjustment_feasible
+) {
+  
+  pca_pc1_model <- lm(
+    PC1 ~ Age + Batch,
+    data = pca_scores
+  )
+  
+  pca_pc2_model <- lm(
+    PC2 ~ Age + Batch,
+    data = pca_scores
+  )
+  
+} else if (
   sex_adjustment_feasible
 ) {
   
@@ -1638,17 +1695,12 @@ writeLines(
   ),
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_PCA_age_models.txt"
-    )
+    paste0(dataset_id, "_PCA_age_sex_batch_models.txt")
   )
 )
 
 
-# =============================================================================
-# 26. Expression and PCA diagnostics
-# =============================================================================
+# 26. Expression and PCA diagnostics ----
 
 expression_prevalence <- data.frame(
   ENSEMBL = rownames(
@@ -1667,10 +1719,7 @@ write.csv(
   expression_prevalence,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_expression_prevalence.csv"
-    )
+    paste0(dataset_id, "_expression_prevalence.csv")
   ),
   row.names = FALSE
 )
@@ -1678,7 +1727,7 @@ write.csv(
 tiff(
   file.path(
     sensitivity_figures_dir,
-    "Expression_prevalence_GSE179277.tiff"
+    "Expression_prevalence_GSE231409.tiff"
   ),
   res = 600,
   width = 3700,
@@ -1705,7 +1754,7 @@ ggplot(
     linewidth = 0.8
   ) +
   ggtitle(
-    "GSE179277"
+    "GSE231409"
   ) +
   xlab(
     "Number of samples with raw count >= 10"
@@ -1763,10 +1812,7 @@ write.csv(
   raw_count_long,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_raw_count_distribution_long.csv"
-    )
+    paste0(dataset_id, "_raw_count_distribution_long.csv")
   ),
   row.names = FALSE
 )
@@ -1774,7 +1820,7 @@ write.csv(
 tiff(
   file.path(
     sensitivity_figures_dir,
-    "Raw_count_distribution_GSE179277.tiff"
+    "Raw_count_distribution_GSE231409.tiff"
   ),
   res = 600,
   width = 3700,
@@ -1796,7 +1842,7 @@ ggplot(
     adjust = 1
   ) +
   ggtitle(
-    "GSE179277"
+    "GSE231409"
   ) +
   xlab(
     "log10(raw count + 1)"
@@ -1847,9 +1893,7 @@ ggplot(
 dev.off()
 
 
-# =============================================================================
-# 27. Sensitivity: continuous age
-# =============================================================================
+# 27. Sensitivity: continuous age ----
 
 metadata_age <- sample_metadata_primary
 
@@ -1860,6 +1904,19 @@ metadata_age$AgeScaled <- as.numeric(
 )
 
 if (
+  batch_adjustment_feasible &&
+  sex_adjustment_feasible
+) {
+  
+  age_design <- ~ Batch + Sex + AgeScaled
+  
+} else if (
+  batch_adjustment_feasible
+) {
+  
+  age_design <- ~ Batch + AgeScaled
+  
+} else if (
   sex_adjustment_feasible
 ) {
   
@@ -1870,82 +1927,100 @@ if (
   age_design <- ~ AgeScaled
 }
 
-dds_age <- DESeqDataSetFromMatrix(
-  countData = counts_primary,
-  colData = metadata_age,
-  design = age_design
+age_design_matrix <- model.matrix(
+  age_design,
+  data = metadata_age
 )
 
-dds_age <- DESeq(
-  dds_age,
-  test = "Wald"
+age_design_full_rank <- (
+  qr(age_design_matrix)$rank ==
+    ncol(age_design_matrix)
 )
 
-age_coef <- grep(
-  "AgeScaled",
-  resultsNames(
-    dds_age
-  ),
-  value = TRUE
-)
-
-if (
-  length(
-    age_coef
-  ) == 1
-) {
+if (age_design_full_rank) {
   
-  res_age <- results(
+  dds_age <- DESeqDataSetFromMatrix(
+    countData = counts_primary,
+    colData = metadata_age,
+    design = age_design
+  )
+  
+  dds_age <- DESeq(
     dds_age,
-    name = age_coef,
-    alpha = ALPHA,
-    independentFiltering = TRUE,
-    cooksCutoff = TRUE
+    test = "Wald"
   )
   
-  res_age_df <- as.data.frame(
-    res_age
+  age_coef <- grep(
+    "AgeScaled",
+    resultsNames(
+      dds_age
+    ),
+    value = TRUE
   )
   
-  res_age_df$ENSEMBL <- rownames(
-    res_age_df
-  )
+  if (
+    length(
+      age_coef
+    ) == 1
+  ) {
+    
+    res_age <- results(
+      dds_age,
+      name = age_coef,
+      alpha = ALPHA,
+      independentFiltering = TRUE,
+      cooksCutoff = TRUE
+    )
+    
+    res_age_df <- as.data.frame(
+      res_age
+    )
+    
+    res_age_df$ENSEMBL <- rownames(
+      res_age_df
+    )
+    
+    rownames(
+      res_age_df
+    ) <- NULL
+    
+    res_age_df$ENSEMBL_BASE <- sub(
+      "\\..*$",
+      "",
+      res_age_df$ENSEMBL
+    )
+    
+    res_age_df <- merge(
+      res_age_df,
+      unique_annotation,
+      by = "ENSEMBL_BASE",
+      all.x = TRUE,
+      sort = FALSE
+    )
+    
+    write.csv(
+      res_age_df,
+      file.path(
+        sensitivity_dir,
+        paste0(dataset_id, "_DESeq2_continuous_age.csv")
+      ),
+      row.names = FALSE
+    )
+  }
   
-  rownames(
-    res_age_df
-  ) <- NULL
+} else {
   
-  res_age_df$ENSEMBL_BASE <- sub(
-    "\\..*$",
-    "",
-    res_age_df$ENSEMBL
-  )
-  
-  res_age_df <- merge(
-    res_age_df,
-    unique_annotation,
-    by = "ENSEMBL_BASE",
-    all.x = TRUE,
-    sort = FALSE
-  )
-  
-  write.csv(
-    res_age_df,
+  writeLines(
+    "Continuous-age sensitivity was not estimable because the design matrix was not full rank.",
     file.path(
       sensitivity_dir,
-      paste0(
-        dataset_id,
-        "_DESeq2_continuous_age.csv"
-      )
-    ),
-    row.names = FALSE
+      paste0(dataset_id, "_continuous_age_NOT_ESTIMABLE.txt")
+    )
   )
 }
 
 
-# =============================================================================
-# 28. Sensitivity: CPM filter
-# =============================================================================
+# 28. Sensitivity: CPM filter ----
 
 dds_cpm <- DESeqDataSetFromMatrix(
   countData = counts_cpm,
@@ -2000,15 +2075,11 @@ write.csv(
   res_cpm_df,
   file.path(
     sensitivity_dir,
-    paste0(
-      dataset_id,
-      "_DESeq2_CPM_filter.csv"
-    )
+    paste0(dataset_id, "_DESeq2_CPM_filter.csv")
   ),
   row.names = FALSE
 )
 
-# Compare effect estimates obtained with the primary and CPM-based filters.
 low_count_comparison <- res_primary_annotated %>%
   dplyr::select(
     ENSEMBL,
@@ -2042,10 +2113,7 @@ write.csv(
   low_count_comparison,
   file.path(
     sensitivity_dir,
-    paste0(
-      dataset_id,
-      "_primary_vs_CPM_filter_comparison.csv"
-    )
+    paste0(dataset_id, "_primary_vs_CPM_filter_comparison.csv")
   ),
   row.names = FALSE
 )
@@ -2053,7 +2121,7 @@ write.csv(
 tiff(
   file.path(
     sensitivity_figures_dir,
-    "Primary_vs_CPM_filter_GSE179277.tiff"
+    "Primary_vs_CPM_filter_GSE231409.tiff"
   ),
   res = 600,
   width = 3700,
@@ -2080,7 +2148,7 @@ ggplot(
     colour = "black"
   ) +
   ggtitle(
-    "GSE179277"
+    "GSE231409"
   ) +
   xlab(
     "Primary filter: log2 fold change"
@@ -2111,9 +2179,7 @@ ggplot(
 dev.off()
 
 
-# =============================================================================
-# 29. Sensitivity: Group x Sex interaction
-# =============================================================================
+# 29. Sensitivity: Group x Sex interaction ----
 
 interaction_feasible <- (
   nlevels(
@@ -2135,101 +2201,125 @@ if (
   interaction_feasible
 ) {
   
-  dds_interaction <- DESeqDataSetFromMatrix(
-    countData = counts_primary,
-    colData = sample_metadata_primary,
-    design = ~ Sex + Group + Sex:Group
+  if (
+    batch_adjustment_feasible
+  ) {
+    interaction_design <- ~ Batch + Sex + Group + Sex:Group
+  } else {
+    interaction_design <- ~ Sex + Group + Sex:Group
+  }
+  
+  interaction_design_matrix <- model.matrix(
+    interaction_design,
+    data = sample_metadata_primary
   )
   
-  dds_interaction <- DESeq(
-    dds_interaction,
-    test = "Wald"
-  )
-  
-  interaction_coef <- grep(
-    "Group.*Sex|Sex.*Group",
-    resultsNames(
-      dds_interaction
-    ),
-    value = TRUE
+  interaction_design_full_rank <- (
+    qr(interaction_design_matrix)$rank ==
+      ncol(interaction_design_matrix)
   )
   
   if (
-    length(
-      interaction_coef
-    ) == 1
+    interaction_design_full_rank
   ) {
     
-    res_interaction <- results(
+    dds_interaction <- DESeqDataSetFromMatrix(
+      countData = counts_primary,
+      colData = sample_metadata_primary,
+      design = interaction_design
+    )
+    
+    dds_interaction <- DESeq(
       dds_interaction,
-      name = interaction_coef,
-      alpha = ALPHA,
-      independentFiltering = TRUE,
-      cooksCutoff = TRUE
+      test = "Wald"
     )
     
-    res_interaction_df <- as.data.frame(
-      res_interaction
-    )
-    
-    res_interaction_df$ENSEMBL <- rownames(
-      res_interaction_df
-    )
-    
-    rownames(
-      res_interaction_df
-    ) <- NULL
-    
-    res_interaction_df$ENSEMBL_BASE <- sub(
-      "\\..*$",
-      "",
-      res_interaction_df$ENSEMBL
-    )
-    
-    res_interaction_df <- merge(
-      res_interaction_df,
-      unique_annotation,
-      by = "ENSEMBL_BASE",
-      all.x = TRUE,
-      sort = FALSE
-    )
-    
-    write.csv(
-      res_interaction_df,
-      file.path(
-        sensitivity_dir,
-        paste0(
-          dataset_id,
-          "_DESeq2_group_sex_interaction.csv"
-        )
+    interaction_coef <- grep(
+      "Group.*Sex|Sex.*Group",
+      resultsNames(
+        dds_interaction
       ),
-      row.names = FALSE
+      value = TRUE
     )
     
-    writeLines(
-      paste(
-        "Interaction coefficient:",
+    if (
+      length(
         interaction_coef
-      ),
-      file.path(
-        sensitivity_dir,
-        paste0(
-          dataset_id,
-          "_group_sex_interaction_info.txt"
+      ) == 1
+    ) {
+      
+      res_interaction <- results(
+        dds_interaction,
+        name = interaction_coef,
+        alpha = ALPHA,
+        independentFiltering = TRUE,
+        cooksCutoff = TRUE
+      )
+      
+      res_interaction_df <- as.data.frame(
+        res_interaction
+      )
+      
+      res_interaction_df$ENSEMBL <- rownames(
+        res_interaction_df
+      )
+      
+      rownames(
+        res_interaction_df
+      ) <- NULL
+      
+      res_interaction_df$ENSEMBL_BASE <- sub(
+        "\\..*$",
+        "",
+        res_interaction_df$ENSEMBL
+      )
+      
+      res_interaction_df <- merge(
+        res_interaction_df,
+        unique_annotation,
+        by = "ENSEMBL_BASE",
+        all.x = TRUE,
+        sort = FALSE
+      )
+      
+      write.csv(
+        res_interaction_df,
+        file.path(
+          sensitivity_dir,
+          paste0(dataset_id, "_DESeq2_group_sex_interaction.csv")
+        ),
+        row.names = FALSE
+      )
+      
+      writeLines(
+        paste(
+          "Interaction coefficient:",
+          interaction_coef
+        ),
+        file.path(
+          sensitivity_dir,
+          paste0(dataset_id, "_group_sex_interaction_info.txt")
         )
       )
-    )
+      
+    } else {
+      
+      writeLines(
+        "Interaction coefficient could not be identified uniquely.",
+        file.path(
+          sensitivity_dir,
+          paste0(dataset_id, "_group_sex_interaction_NOT_ESTIMABLE.txt")
+        )
+      )
+    }
     
   } else {
     
     writeLines(
-      "Interaction coefficient could not be identified uniquely.",
+      "Group x Sex interaction was not estimable because the design matrix was not full rank.",
       file.path(
         sensitivity_dir,
-        paste0(
-          dataset_id,
-          "_group_sex_interaction_NOT_ESTIMABLE.txt"
-        )
+        paste0(dataset_id, "_group_sex_interaction_NOT_ESTIMABLE.txt")
       )
     )
   }
@@ -2240,18 +2330,13 @@ if (
     "Group x Sex interaction was not estimable because at least one Group x Sex cell was empty.",
     file.path(
       sensitivity_dir,
-      paste0(
-        dataset_id,
-        "_group_sex_interaction_NOT_ESTIMABLE.txt"
-      )
+      paste0(dataset_id, "_group_sex_interaction_NOT_ESTIMABLE.txt")
     )
   )
 }
 
 
-# =============================================================================
-# 30. Sensitivity summary
-# =============================================================================
+# 30. Sensitivity summary ----
 
 primary_significant_ids <- res_primary_annotated$ENSEMBL[
   !is.na(
@@ -2337,18 +2422,13 @@ write.csv(
   sensitivity_summary,
   file.path(
     sensitivity_dir,
-    paste0(
-      dataset_id,
-      "_sensitivity_summary.csv"
-    )
+    paste0(dataset_id, "_sensitivity_summary.csv")
   ),
   row.names = FALSE
 )
 
 
-# =============================================================================
-# 31. Workflow summary
-# =============================================================================
+# 31. Workflow summary ----
 
 workflow_summary <- c(
   
@@ -2364,12 +2444,18 @@ workflow_summary <- c(
   
   paste(
     "Population:",
-    "SARS-CoV-2-positive samples only"
+    "SARS-CoV-2-positive nasal/nasopharyngeal swab samples selected using the original analysis logic"
   ),
   
   paste(
     "Age-group definition:",
-    "Original study labels: Peds vs Adult"
+    paste0(
+      "Pediatric < ",
+      AGE_CUTOFF,
+      " years; Adult >= ",
+      AGE_CUTOFF,
+      " years"
+    )
   ),
   
   paste(
@@ -2400,6 +2486,15 @@ workflow_summary <- c(
     "Pediatric samples:",
     sum(
       sample_metadata_primary$Group == "Pediatric"
+    )
+  ),
+  
+  paste(
+    "Batch levels:",
+    nlevels(
+      droplevels(
+        sample_metadata_primary$Batch
+      )
     )
   ),
   
@@ -2457,8 +2552,28 @@ workflow_summary <- c(
   ),
   
   paste(
+    "Primary design full rank:",
+    primary_design_full_rank
+  ),
+  
+  paste(
+    "Batch adjustment feasible:",
+    batch_adjustment_feasible
+  ),
+  
+  paste(
     "Sex adjustment feasible:",
     sex_adjustment_feasible
+  ),
+  
+  paste(
+    "Cohort selection:",
+    "Sex and Batch were not used to exclude samples; both were retained only as model covariates"
+  ),
+  
+  paste(
+    "Batch handling:",
+    "included as a DESeq2 design covariate; no pre-correction of raw counts"
   ),
   
   paste(
@@ -2590,17 +2705,12 @@ writeLines(
   workflow_summary,
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_workflow_summary.txt"
-    )
+    paste0(dataset_id, "_workflow_summary.txt")
   )
 )
 
 
-# =============================================================================
-# 32. Reproducibility
-# =============================================================================
+# 32. Reproducibility ----
 
 writeLines(
   capture.output(
@@ -2608,10 +2718,7 @@ writeLines(
   ),
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_sessionInfo.txt"
-    )
+    paste0(dataset_id, "_sessionInfo.txt")
   )
 )
 
@@ -2680,17 +2787,12 @@ writeLines(
   ),
   file.path(
     diagnostics_dir,
-    paste0(
-      dataset_id,
-      "_package_versions.txt"
-    )
+    paste0(dataset_id, "_package_versions.txt")
   )
 )
 
 
-# =============================================================================
-# 33. Final summary
-# =============================================================================
+# 33. Final summary ----
 
 message("")
 message("============================================================")
@@ -2720,6 +2822,15 @@ message(
   " / ",
   sum(
     sample_metadata_primary$Group == "Pediatric"
+  )
+)
+
+message(
+  "Batch levels: ",
+  nlevels(
+    droplevels(
+      sample_metadata_primary$Batch
+    )
   )
 )
 
